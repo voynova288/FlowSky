@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { DeepSeekProvider } from "../packages/agent-gateway/src/providers/DeepSeekProvider.ts";
 import { modelConfigForMode } from "../packages/agent-gateway/src/providers/model-config.ts";
 
-if (!process.env.DEEPSEEK_API_KEY && existsSync("API.txt")) {
-  process.env.DEEPSEEK_API_KEY = readFileSync("API.txt", "utf8").trim();
-}
+loadEnvLocal();
 
 if (!process.env.DEEPSEEK_API_KEY) {
-  console.error("DEEPSEEK_API_KEY is required. Export it or provide local API.txt (gitignored). ");
+  console.error("DEEPSEEK_API_KEY is required. Put it in .env.local or export it in this shell.");
   process.exit(1);
 }
 
@@ -39,3 +38,17 @@ for await (const chunk of provider.stream({
   if (chunk.usage) sawUsage = true;
 }
 console.log(JSON.stringify({ stream_ok: streamed.length > 0, streamed: streamed.slice(0, 40), saw_usage: sawUsage }, null, 2));
+
+function loadEnvLocal(): void {
+  const path = resolve(process.cwd(), ".env.local");
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (!process.env[key]) process.env[key] = value;
+  }
+}

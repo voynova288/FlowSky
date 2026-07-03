@@ -1,7 +1,1 @@
-{
-  "name": "@flowsky/api",
-  "version": "0.1.0",
-  "type": "module",
-  "private": true,
-  "main": "src/server.ts"
-}
+{"name":"@liukong/local-server","version":"0.2.0","type":"module","private":true,"main":"src/server.ts"}

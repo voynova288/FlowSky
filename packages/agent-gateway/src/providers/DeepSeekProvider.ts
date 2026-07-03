@@ -17,11 +17,11 @@ export class DeepSeekProvider implements LLMProvider {
 
   constructor(options: DeepSeekProviderOptions = {}) {
     this.apiKey = options.apiKey ?? process.env.DEEPSEEK_API_KEY ?? "";
-    this.baseUrl = (options.baseUrl ?? DEEPSEEK_BASE_URL).replace(/\/$/, "");
+    this.baseUrl = (options.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? process.env.LIUKONG_DEEPSEEK_BASE_URL ?? DEEPSEEK_BASE_URL).replace(/\/$/, "");
     this.fetchFn = options.fetchFn ?? fetch;
     this.logger = options.logger;
     if (!this.apiKey) {
-      throw new Error("DEEPSEEK_API_KEY is required");
+      throw new Error("missing_provider_key");
     }
   }
 

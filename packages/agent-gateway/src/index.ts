@@ -1,5 +1,6 @@
 export * from "./types.ts";
 export * from "./providers/LLMProvider.ts";
+export * from "./local/paths.ts";
 export * from "./providers/model-config.ts";
 export * from "./providers/createDefaultAgentGateway.ts";
 export * from "./gateway/AgentGateway.ts";

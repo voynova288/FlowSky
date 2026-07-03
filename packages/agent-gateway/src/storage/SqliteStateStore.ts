@@ -1,7 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { defaultLocalDbPath, defaultLocalProfileId } from "../local/paths.ts";
 import { DatabaseSync } from "node:sqlite";
-import type { MemoryCandidate, StoredMemory, UserSettings } from "../types.ts";
+import type { LLMMessage, MemoryCandidate, StoredMemory, ToolCallRecord, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import type { MemoryStoreLike } from "../memory/MemoryStore.ts";
 import { DEFAULT_USER_SETTINGS, type SettingsStoreLike } from "../tools/tools/settings_tools.ts";
@@ -102,6 +103,23 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_tool_calls_request ON tool_calls(request_id);
     `,
   },
+  {
+    version: 3,
+    name: "local_profiles_and_local_audit_view",
+    sql: `
+      CREATE TABLE IF NOT EXISTS local_profiles (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      INSERT OR IGNORE INTO local_profiles (id, display_name, created_at, updated_at)
+      VALUES ('default', '本地用户', datetime('now'), datetime('now'));
+
+      CREATE VIEW IF NOT EXISTS local_audit_logs AS SELECT * FROM audit_logs;
+    `,
+  },
 ] as const;
 
 export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
@@ -115,6 +133,62 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
 
   close(): void {
     this.db.close();
+  }
+
+  recentMessages(userId: string, sessionId: string, limit = 12): LLMMessage[] {
+    const rows = this.db
+      .prepare(`SELECT role, content FROM messages
+        WHERE user_id = ? AND session_id = ? AND role IN ('user', 'assistant')
+        ORDER BY created_at DESC LIMIT ?`)
+      .all(userId, sessionId, limit) as Array<{ role: "user" | "assistant"; content: string }>;
+    return rows.reverse().map((row) => ({ role: row.role, content: row.content }));
+  }
+
+  saveMessage(params: {
+    id: string;
+    session_id: string;
+    user_id: string;
+    role: "user" | "assistant";
+    content: string;
+    emotion?: string;
+    avatar_action?: string;
+  }): void {
+    const now = nowIso();
+    this.db
+      .prepare(`INSERT INTO sessions (id, user_id, created_at, updated_at, status)
+        VALUES (?, ?, ?, ?, 'active')
+        ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`)
+      .run(params.session_id, params.user_id, now, now);
+    this.db
+      .prepare(`INSERT INTO messages (id, session_id, user_id, role, content, emotion, avatar_action, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        params.id,
+        params.session_id,
+        params.user_id,
+        params.role,
+        params.content,
+        params.emotion ?? null,
+        params.avatar_action ?? null,
+        now,
+      );
+  }
+
+  recordToolCall(record: ToolCallRecord): void {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO tool_calls (
+        id, request_id, user_id, tool_name, arguments_json, allowed, result_summary, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        record.id,
+        record.request_id,
+        record.user_id,
+        record.tool_name,
+        JSON.stringify(record.arguments_json),
+        record.allowed ? 1 : 0,
+        record.result_summary ?? null,
+        record.created_at,
+      );
   }
 
   save(userId: string, candidate: MemoryCandidate, userConfirmed = false): StoredMemory {
@@ -278,6 +352,53 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     return this.db.prepare("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?").all(limit);
   }
 
+  exportLocalData(userId = defaultLocalProfileId()): unknown {
+    const settings = this.get(userId);
+    const memories = this.list(userId);
+    const sessions = this.db.prepare("SELECT * FROM sessions WHERE user_id = ? ORDER BY updated_at DESC").all(userId);
+    const messages = this.db
+      .prepare("SELECT * FROM messages WHERE user_id = ? ORDER BY created_at ASC")
+      .all(userId);
+    const relationship = this.db.prepare("SELECT * FROM relationship_states WHERE user_id = ?").get(userId) ?? null;
+    const toolCalls = this.db.prepare("SELECT * FROM tool_calls WHERE user_id = ? ORDER BY created_at DESC").all(userId);
+    const auditLogs = this.db
+      .prepare(`SELECT request_id, model, thinking_type, first_token_latency, total_latency,
+        usage_json, safety_flags_json, error_code, created_at
+        FROM audit_logs WHERE user_id = ? ORDER BY created_at DESC`)
+      .all(userId);
+    return {
+      exported_at: nowIso(),
+      profile_id: userId,
+      settings,
+      memories,
+      sessions,
+      messages,
+      relationship,
+      tool_calls: toolCalls,
+      local_audit_logs: auditLogs,
+    };
+  }
+
+  clearLocalData(userId = defaultLocalProfileId()): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM tool_calls WHERE user_id = ?").run(userId);
+      this.db.prepare("DELETE FROM relationship_states WHERE user_id = ?").run(userId);
+      this.db.prepare("DELETE FROM messages WHERE user_id = ?").run(userId);
+      this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+      this.db.prepare("DELETE FROM memories WHERE user_id = ?").run(userId);
+      this.db.prepare("DELETE FROM audit_logs WHERE user_id = ?").run(userId);
+      this.db.prepare("DELETE FROM user_settings WHERE user_id = ?").run(userId);
+      this.db
+        .prepare("INSERT OR IGNORE INTO local_profiles (id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+        .run(userId, "本地用户", nowIso(), nowIso());
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   private init(): void {
     this.db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.db.exec(`
@@ -326,5 +447,5 @@ function rowToMemory(row: any): StoredMemory {
 }
 
 export function defaultStateDbPath(): string {
-  return process.env.FLOWSKY_STATE_DB ?? resolve(process.cwd(), ".flowsky", "state.db");
+  return defaultLocalDbPath();
 }

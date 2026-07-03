@@ -7,6 +7,7 @@ export type ChatMode =
 export interface ChatRequest {
   request_id?: string;
   user_id: string;
+  profile_id?: string;
   session_id: string;
   input: {
     type: "text";

@@ -13,12 +13,27 @@ import type { AgentResponse, ChatRequest, LLMMessage, LLMToolCall, RelationshipS
 import { approxUsageFromMessages, nowIso, randomId } from "../util.ts";
 import { inferAvatarSignal, StreamEventMapper } from "./StreamEventMapper.ts";
 
+export interface ConversationStoreLike {
+  recentMessages?(userId: string, sessionId: string, limit?: number): LLMMessage[];
+  saveMessage?(params: {
+    id: string;
+    session_id: string;
+    user_id: string;
+    role: "user" | "assistant";
+    content: string;
+    emotion?: string;
+    avatar_action?: string;
+  }): void;
+  recordToolCall?(record: ToolCallRecord): void;
+}
+
 export interface AgentGatewayOptions {
   provider: LLMProvider;
   promptAssembler?: PromptAssembler;
   memoryController?: MemoryController;
   toolRouter?: ToolRouter;
   requestLogger?: RequestLogger;
+  conversationStore?: ConversationStoreLike;
 }
 
 export class AgentGateway {
@@ -27,6 +42,7 @@ export class AgentGateway {
   private readonly memoryController: MemoryController;
   private readonly toolRouter: ToolRouter;
   private readonly requestLogger: RequestLogger;
+  private readonly conversationStore?: ConversationStoreLike;
   private readonly inputSafety = new InputSafetyGate();
   private readonly outputSafety = new OutputSafetyGate();
   private readonly romanceGate = new RomanceRealismGate();
@@ -38,6 +54,7 @@ export class AgentGateway {
     this.memoryController = options.memoryController ?? new MemoryController();
     this.toolRouter = options.toolRouter ?? new ToolRouter();
     this.requestLogger = options.requestLogger ?? new RequestLogger();
+    this.conversationStore = options.conversationStore;
   }
 
   async chat(request: ChatRequest): Promise<AgentResponse> {
@@ -53,11 +70,12 @@ export class AgentGateway {
     }
 
     const memories = settings.memory_enabled ? this.memoryController.retrieve(request.user_id, request.input.text) : [];
+    const recentHistory = this.conversationStore?.recentMessages?.(request.user_id, request.session_id, 12) ?? [];
     const messages = this.promptAssembler.assemble({
       relationship_state: relationship,
       user_settings: settings,
       retrieved_memories: memories,
-      recent_history: [],
+      recent_history: recentHistory,
       current_user_input: request.input.text,
     });
     const modelConfig = modelConfigForMode(mode);
@@ -75,6 +93,7 @@ export class AgentGateway {
         userId: request.user_id,
       });
       toolRecords.push(...toolMessages.records);
+      for (const record of toolMessages.records) this.conversationStore?.recordToolCall?.(record);
       const followUpMessages: LLMMessage[] = [
         ...messages,
         { role: "assistant", content: llm.text ?? "", tool_calls: llm.tool_calls },
@@ -113,6 +132,22 @@ export class AgentGateway {
       total_latency: latency,
       usage: llm.usage,
       safety_flags: finalSafety.flags,
+    });
+    this.conversationStore?.saveMessage?.({
+      id: randomId("msg"),
+      session_id: request.session_id,
+      user_id: request.user_id,
+      role: "user",
+      content: request.input.text,
+    });
+    this.conversationStore?.saveMessage?.({
+      id: messageId,
+      session_id: request.session_id,
+      user_id: request.user_id,
+      role: "assistant",
+      content: text,
+      emotion: avatar.emotion,
+      avatar_action: avatar.action,
     });
 
     return {
@@ -185,11 +220,12 @@ export class AgentGateway {
     }
 
     const memories = settings.memory_enabled ? this.memoryController.retrieve(request.user_id, request.input.text) : [];
+    const recentHistory = this.conversationStore?.recentMessages?.(request.user_id, request.session_id, 12) ?? [];
     const messages = this.promptAssembler.assemble({
       relationship_state: defaultRelationship(),
       user_settings: settings,
       retrieved_memories: memories,
-      recent_history: [],
+      recent_history: recentHistory,
       current_user_input: request.input.text,
     });
     const modelConfig = modelConfigForMode(request.mode ?? "girlfriend_chat");
@@ -214,7 +250,8 @@ export class AgentGateway {
       const output = this.outputSafety.check(finalText);
       const finalSafety = mergeSafety(inputSafety, romance, output);
       if (finalSafety.rewrite_required && finalSafety.rewritten_text) finalText = finalSafety.rewritten_text;
-      yield { event: "avatar_signal", data: inferAvatarSignal(finalText) };
+      const avatar = inferAvatarSignal(finalText);
+      yield { event: "avatar_signal", data: avatar };
       for (const delta of splitForStreaming(finalText)) {
         yield { event: "text_delta", data: { delta } };
       }
@@ -238,6 +275,22 @@ export class AgentGateway {
         total_latency: tracker.totalLatencyMs(),
         usage,
         safety_flags: finalSafety.flags,
+      });
+      this.conversationStore?.saveMessage?.({
+        id: randomId("msg"),
+        session_id: request.session_id,
+        user_id: request.user_id,
+        role: "user",
+        content: request.input.text,
+      });
+      this.conversationStore?.saveMessage?.({
+        id: messageId,
+        session_id: request.session_id,
+        user_id: request.user_id,
+        role: "assistant",
+        content: finalText,
+        emotion: avatar.emotion,
+        avatar_action: avatar.action,
       });
       yield this.streamMapper.done(messageId, usage, tracker.totalLatencyMs(), tracker.firstTokenLatencyMs());
     } catch (error) {

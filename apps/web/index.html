@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>FlowSky / 流空</title>
+    <title>流空 Liukong</title>
     <style>
       :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #27324f, #090b13 55%); color: #eef2ff; }
-      main { width: min(1180px, calc(100vw - 28px)); height: min(820px, calc(100vh - 28px)); margin: 14px auto; display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 14px; }
+      main { width: min(1180px, calc(100vw - 28px)); height: min(840px, calc(100vh - 28px)); margin: 14px auto; display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; }
       .chat, aside { border: 1px solid rgba(255,255,255,.14); border-radius: 22px; background: rgba(8, 12, 24, .62); box-shadow: 0 24px 80px rgba(0,0,0,.35); overflow: hidden; }
       .chat { display: grid; grid-template-rows: auto 1fr auto; }
       header, aside header { padding: 16px 18px; border-bottom: 1px solid rgba(255,255,255,.1); }
@@ -39,8 +39,8 @@
     <main>
       <section class="chat">
         <header>
-          <h1>FlowSky / 流空</h1>
-          <div class="status" id="status">本地 MVP · DeepSeek streaming · Memory/Safety gates</div>
+          <h1>流空 Liukong</h1>
+          <div class="status" id="status">本地优先 · BYOK · 无账号 · 本机 SQLite 记忆</div>
         </header>
         <section id="messages" aria-live="polite"></section>
         <form class="chat-form" id="chatForm">
@@ -49,12 +49,12 @@
         </form>
       </section>
       <aside>
-        <header><h2>控制台</h2><div class="meta">AI 非真人；长期记忆可关闭、查看、删除。</div></header>
+        <header><h2>本地控制台</h2><div class="meta">不需要账号。API key 只发给本机 localhost 后端，不写入数据库。</div></header>
         <section class="panel">
-          <h2>连接</h2>
-          <div class="row stack"><label>user_id（无 auth 时使用）</label><input id="userId" value="demo-user" /></div>
-          <div class="row stack"><label>Bearer token（可选）</label><input id="authToken" type="password" placeholder="FLOWSKY_API_AUTH_TOKEN 或 JWT" /></div>
-          <button class="secondary" id="saveClient" type="button">保存本地设置</button>
+          <h2>模型密钥</h2>
+          <div class="row stack"><label>DeepSeek API key（当前浏览器会话保存）</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
+          <div class="row stack"><label>本地 profile</label><input id="profileId" value="default" /></div>
+          <button class="secondary" id="saveClient" type="button">保存本地会话设置</button>
         </section>
         <section class="panel">
           <h2>用户设置</h2>
@@ -69,32 +69,41 @@
           <button class="secondary" id="refreshMemories" type="button">刷新记忆</button>
           <div id="memories"></div>
         </section>
+        <section class="panel">
+          <h2>本地数据</h2>
+          <button class="secondary" id="exportData" type="button">导出 JSON</button>
+          <button class="danger" id="resetData" type="button">清空本地数据</button>
+        </section>
       </aside>
     </main>
     <script>
+      const boot = window.__LIUKONG_LOCAL__ || { localToken: '', profileId: 'default' };
       const $ = (id) => document.querySelector(id);
       const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
-      const userId = $('#userId'), authToken = $('#authToken'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), memoriesEl = $('#memories');
-      userId.value = localStorage.getItem('flowsky.user_id') || 'demo-user';
-      authToken.value = sessionStorage.getItem('flowsky.auth_token') || '';
+      const apiKey = $('#apiKey'), profileId = $('#profileId'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), memoriesEl = $('#memories');
+      apiKey.value = sessionStorage.getItem('liukong.deepseek_api_key') || '';
+      profileId.value = localStorage.getItem('liukong.profile_id') || boot.profileId || 'default';
 
-      function headers(json = false) {
+      function headers(json = false, includeApiKey = false) {
         const h = json ? { 'content-type': 'application/json' } : {};
-        if (authToken.value.trim()) h.authorization = 'Bearer ' + authToken.value.trim();
-        h['x-flowsky-user-id'] = userId.value.trim() || 'demo-user';
+        h['x-liukong-local-token'] = boot.localToken || '';
+        h['x-liukong-profile-id'] = profileId.value.trim() || 'default';
+        if (includeApiKey && apiKey.value.trim()) h['x-liukong-api-key'] = apiKey.value.trim();
         return h;
       }
-      function userQuery() { return '?user_id=' + encodeURIComponent(userId.value.trim() || 'demo-user'); }
+      function profileQuery() { return '?profile_id=' + encodeURIComponent(profileId.value.trim() || 'default'); }
       function append(role, text = '') { const box = document.createElement('div'); box.className = `msg ${role}`; box.textContent = text; messages.appendChild(box); messages.scrollTop = messages.scrollHeight; return box; }
       function parseSse(buffer, onEvent) { const parts = buffer.split('\n\n'); const rest = parts.pop() || ''; for (const part of parts) { const event = part.split('\n').find(l => l.startsWith('event:'))?.slice(6).trim(); const data = part.split('\n').find(l => l.startsWith('data:'))?.slice(5).trim(); if (event && data) onEvent(event, JSON.parse(data)); } return rest; }
 
-      $('#saveClient').onclick = () => { localStorage.setItem('flowsky.user_id', userId.value.trim()); sessionStorage.setItem('flowsky.auth_token', authToken.value.trim()); statusEl.textContent = '本地连接设置已保存（token 仅保存到当前浏览器会话）'; };
-      $('#loadSettings').onclick = loadSettings;
-      $('#saveSettings').onclick = saveSettings;
-      $('#refreshMemories').onclick = loadMemories;
+      $('#saveClient').onclick = () => { localStorage.setItem('liukong.profile_id', profileId.value.trim() || 'default'); sessionStorage.setItem('liukong.deepseek_api_key', apiKey.value.trim()); statusEl.textContent = '本地会话设置已保存；API key 仅保存到 sessionStorage'; };
+      $('#loadSettings').onclick = () => loadSettings().catch(showError);
+      $('#saveSettings').onclick = () => saveSettings().catch(showError);
+      $('#refreshMemories').onclick = () => loadMemories().catch(showError);
+      $('#exportData').onclick = () => exportData().catch(showError);
+      $('#resetData').onclick = () => resetData().catch(showError);
 
       async function loadSettings() {
-        const res = await fetch('/settings' + userQuery(), { headers: headers() });
+        const res = await fetch('/settings' + profileQuery(), { headers: headers() });
         if (!res.ok) throw new Error('settings load failed: ' + res.status);
         const s = await res.json();
         memoryEnabled.checked = !!s.memory_enabled;
@@ -102,11 +111,11 @@
         avatarEnabled.checked = !!s.avatar_enabled;
       }
       async function saveSettings() {
-        await fetch('/settings' + userQuery(), { method: 'PATCH', headers: headers(true), body: JSON.stringify({ memory_enabled: memoryEnabled.checked, romance_realism_level: Number(romanceLevel.value), avatar_enabled: avatarEnabled.checked }) });
-        statusEl.textContent = '设置已保存';
+        await fetch('/settings' + profileQuery(), { method: 'PATCH', headers: headers(true), body: JSON.stringify({ memory_enabled: memoryEnabled.checked, romance_realism_level: Number(romanceLevel.value), avatar_enabled: avatarEnabled.checked }) });
+        statusEl.textContent = '设置已保存到本机';
       }
       async function loadMemories() {
-        const res = await fetch('/memories' + userQuery(), { headers: headers() });
+        const res = await fetch('/memories' + profileQuery(), { headers: headers() });
         const body = await res.json();
         memoriesEl.innerHTML = '';
         for (const m of body.memories || []) renderMemory(m);
@@ -118,20 +127,24 @@
         const content = document.createElement('div'); content.textContent = String(m.content || '');
         const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${String(m.memory_type || 'memory')} · ${String(m.sensitivity || 'low')}${pending ? ' · 待确认' : ''}`;
         const actions = document.createElement('div'); actions.className = 'memory-actions';
-        if (pending) actions.append(button('确认', () => confirmMemory(m.id)), button('拒绝', () => rejectMemory(m.id, true)));
-        actions.append(button('删除', () => rejectMemory(m.id, false), 'danger'));
+        if (pending) actions.append(button('确认', () => confirmMemory(m.id)), button('拒绝', () => rejectMemory(m.id)));
+        actions.append(button('删除', () => rejectMemory(m.id), 'danger'));
         div.append(content, meta, actions); memoriesEl.append(div);
       }
       function button(text, onclick, cls = 'secondary') { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = text; b.onclick = onclick; return b; }
-      async function confirmMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/confirm` + userQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
-      async function rejectMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/reject` + userQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
+      async function confirmMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/confirm` + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
+      async function rejectMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/reject` + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
+      async function exportData() { const res = await fetch('/local/export' + profileQuery(), { headers: headers() }); const data = await res.json(); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `liukong-${profileId.value || 'default'}-export.json`; a.click(); URL.revokeObjectURL(a.href); }
+      async function resetData() { if (!confirm('确定清空当前 profile 的本地设置、记忆和日志吗？')) return; await fetch('/local/reset' + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadSettings(); await loadMemories(); statusEl.textContent = '本地数据已清空'; }
+      function showError(error) { statusEl.textContent = '错误：' + error.message; }
 
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const text = input.value.trim(); if (!text) return;
+        if (!apiKey.value.trim()) { statusEl.textContent = '请先填入 DeepSeek API key，或在 .env.local 设置 DEEPSEEK_API_KEY'; return; }
         input.value = ''; send.disabled = true; append('user', text); const aiBox = append('ai', ''); statusEl.textContent = 'Mika 正在回复…';
         try {
-          const res = await fetch('/chat/stream', { method: 'POST', headers: headers(true), body: JSON.stringify({ user_id: userId.value.trim() || 'demo-user', session_id: 'demo-session', input: { type: 'text', text }, mode: 'girlfriend_chat', client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: avatarEnabled.checked, voice_enabled: false } }) });
+          const res = await fetch('/chat/stream', { method: 'POST', headers: headers(true, true), body: JSON.stringify({ profile_id: profileId.value.trim() || 'default', session_id: 'local-session', input: { type: 'text', text }, mode: 'girlfriend_chat', client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: avatarEnabled.checked, voice_enabled: false } }) });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           const reader = res.body.getReader(), decoder = new TextDecoder(); let buffer = '';
           while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); buffer = parseSse(buffer, (name, data) => { if (name === 'text_delta') aiBox.textContent += data.delta; if (name === 'avatar_signal') statusEl.textContent = `emotion=${data.emotion}, action=${data.action}`; if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选'; messages.scrollTop = messages.scrollHeight; }); }

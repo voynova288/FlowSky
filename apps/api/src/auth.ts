@@ -1,66 +1,51 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { resolve } from "node:path";
+import { defaultLocalDataDir, defaultLocalProfileId, sanitizeLocalProfileId } from "../../../packages/agent-gateway/src/local/paths.ts";
 
 export interface AuthContext {
+  profileId: string;
   userId: string;
-  mode: "dev" | "token" | "jwt";
+  mode: "local";
 }
 
-export function authenticate(req: IncomingMessage, fallbackUserId?: string | null): AuthContext | null {
-  const jwtSecret = process.env.FLOWSKY_JWT_SECRET;
-  const apiToken = process.env.FLOWSKY_API_AUTH_TOKEN;
-  const auth = req.headers.authorization ?? "";
+export interface LocalAuthOptions {
+  localToken: string;
+  requireLocalToken: boolean;
+  requestedProfileId?: string | null;
+}
 
-  if (jwtSecret) {
-    const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-    const claims = token ? verifyHs256Jwt(token, jwtSecret) : null;
-    if (!claims?.sub || typeof claims.sub !== "string") return null;
-    return { userId: claims.sub, mode: "jwt" };
+export function authenticateLocal(req: IncomingMessage, options: LocalAuthOptions): AuthContext | null {
+  if (options.requireLocalToken) {
+    const token = firstHeader(req.headers["x-liukong-local-token"] ?? req.headers["x-flowsky-local-token"]);
+    if (!token || !safeEqual(token, options.localToken)) return null;
   }
-
-  if (apiToken) {
-    const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-    if (!safeEqual(token, apiToken)) return null;
-    const headerUser = firstHeader(req.headers["x-flowsky-user-id"]);
-    return { userId: headerUser || fallbackUserId || "default-user", mode: "token" };
-  }
-
-  return { userId: fallbackUserId || "demo-user", mode: "dev" };
+  const headerProfile = firstHeader(req.headers["x-liukong-profile-id"] ?? req.headers["x-flowsky-user-id"]);
+  const profileId = sanitizeLocalProfileId(headerProfile ?? options.requestedProfileId ?? defaultLocalProfileId());
+  return { profileId, userId: profileId, mode: "local" };
 }
 
 export function writeUnauthorized(res: ServerResponse): void {
-  const body = JSON.stringify({ error: "unauthorized" });
+  const body = JSON.stringify({ error: "local_token_required" });
   res.writeHead(401, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
-    "www-authenticate": "Bearer",
   });
   res.end(body);
 }
 
-function verifyHs256Jwt(token: string, secret: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const [encodedHeader, encodedPayload, signature] = parts;
-    const header = JSON.parse(base64UrlDecode(encodedHeader).toString("utf8"));
-    if (header.alg !== "HS256") return null;
-    const expected = base64UrlEncode(createHmac("sha256", secret).update(`${encodedHeader}.${encodedPayload}`).digest());
-    if (!safeEqual(signature, expected)) return null;
-    const claims = JSON.parse(base64UrlDecode(encodedPayload).toString("utf8"));
-    if (typeof claims.exp === "number" && Date.now() / 1000 >= claims.exp) return null;
-    return claims;
-  } catch {
-    return null;
-  }
+export function loadOrCreateLocalToken(dataDir = defaultLocalDataDir()): string {
+  const tokenPath = resolve(dataDir, "local_token");
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  if (existsSync(tokenPath)) return readFileSync(tokenPath, "utf8").trim();
+  const token = randomBytes(32).toString("base64url");
+  writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
+  return token;
 }
 
-function base64UrlDecode(value: string): Buffer {
-  return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-}
-
-function base64UrlEncode(value: Buffer): string {
-  return value.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+export function localTokenRequired(): boolean {
+  return process.env.LIUKONG_REQUIRE_LOCAL_TOKEN !== "false" && process.env.FLOWSKY_REQUIRE_LOCAL_TOKEN !== "false";
 }
 
 function safeEqual(a: string, b: string): boolean {

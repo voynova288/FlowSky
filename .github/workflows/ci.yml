@@ -16,4 +16,4 @@ jobs:
           node-version: '22.22.0'
       - run: npm test
       - run: npm run check:secrets
-      - run: docker build -t flowsky-ci .
+      - run: docker build -t liukong-ci .

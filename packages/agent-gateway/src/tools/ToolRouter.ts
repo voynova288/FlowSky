@@ -62,7 +62,7 @@ export class ToolRouter {
         type: "function",
         function: {
           name: "get_user_settings",
-          description: "Read the current user's FlowSky settings.",
+          description: "Read the current local Liukong profile settings.",
           parameters: { type: "object", properties: {}, additionalProperties: false },
         },
       },
@@ -70,7 +70,7 @@ export class ToolRouter {
         type: "function",
         function: {
           name: "update_user_settings",
-          description: "Update low-risk FlowSky settings for the current user.",
+          description: "Update low-risk Liukong settings for the current local profile.",
           parameters: {
             type: "object",
             properties: {

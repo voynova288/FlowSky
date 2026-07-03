@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
-const forbidden = ['API.txt', '.env'];
+const forbidden = ['API.txt', '.env', '.env.local', 'local_token'];
 const tracked = new Set(
   execFileSync('git', ['ls-files'], { encoding: 'utf8' })
     .split('\n')

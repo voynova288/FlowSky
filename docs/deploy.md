@@ -1,35 +1,48 @@
-# Deploy
+# Local Run / Packaging
 
 ## Local
 
 ```bash
-export DEEPSEEK_API_KEY="..."
-export FLOWSKY_JWT_SECRET="change-me"
+cp .env.example .env.local
+# edit .env.local and set DEEPSEEK_API_KEY, or type a BYOK key in the UI
 npm run dev:api
 ```
 
 Open `http://127.0.0.1:3000/`.
 
+Default local state:
+
+```text
+~/.liukong/liukong.db
+~/.liukong/local_token
+```
+
+For repo-local development state:
+
+```bash
+LIUKONG_DATA_DIR=./.local npm run dev:api
+```
+
 ## Docker
 
 ```bash
-docker build -t flowsky:local .
-docker run --rm -p 3000:3000 \
+docker build -t liukong:local .
+docker run --rm -p 127.0.0.1:3000:3000 \
   -e DEEPSEEK_API_KEY \
-  -e FLOWSKY_JWT_SECRET \
-  -v flowsky-data:/data \
-  flowsky:local
+  -e LIUKONG_HOST=0.0.0.0 \
+  -e LIUKONG_ALLOW_NON_LOOPBACK=true \
+  -v liukong-data:/data \
+  liukong:local
 ```
 
-The container stores SQLite state at `/data/state.db` by default.
+The container stores SQLite state under `/data` by default. Bind the published port to `127.0.0.1` unless you have added an external security layer.
 
-## Required production settings
+## Required local settings
 
-- `DEEPSEEK_API_KEY`: provided by secret manager, never committed.
-- `FLOWSKY_JWT_SECRET`: required for real multi-user deployments.
-- `FLOWSKY_STATE_DB`: point to persistent volume if not using Docker default.
-- `HOST`: defaults to `127.0.0.1`; set `0.0.0.0` only with JWT/token auth enabled.
-- TLS and reverse proxy rate limiting should be configured outside this app.
+- `DEEPSEEK_API_KEY`: optional if the user types BYOK in the UI, required for headless/smoke use.
+- `LIUKONG_DATA_DIR`: persistent local data directory, default `~/.liukong` and `/data` in Docker.
+- `LIUKONG_HOST`: defaults to `127.0.0.1`; non-loopback requires `LIUKONG_ALLOW_NON_LOOPBACK=true` and should be used only inside trusted container/sandbox packaging.
+- `LIUKONG_REQUIRE_LOCAL_TOKEN`: defaults to `true`.
 
 ## CI
 
@@ -38,4 +51,5 @@ GitHub Actions runs:
 ```bash
 npm test
 npm run check:secrets
+docker build -t liukong-ci .
 ```

@@ -1,6 +1,7 @@
 .git
 node_modules
 .flowsky
+.local
 *.db
 *.db-shm
 *.db-wal
@@ -8,6 +9,8 @@ node_modules
 .env.*
 !.env.example
 API.txt
+local_token
 coverage
 dist
+logs
 *.log

@@ -6,6 +6,7 @@ dist/
 coverage/
 .nyc_output/
 .flowsky/
+.local/
 *.db
 *.db-shm
 *.db-wal
@@ -15,6 +16,7 @@ coverage/
 .env.*
 !.env.example
 API.txt
+local_token
 *.key
 *.pem
 

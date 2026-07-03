@@ -1,10 +1,23 @@
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { AgentGateway, createDefaultAgentGateway, type ChatRequest, type MemoryType, type StreamEvent, type UserSettings } from "../../../packages/agent-gateway/src/index.ts";
-import { authenticate, writeUnauthorized } from "./auth.ts";
+import {
+  AgentGateway,
+  createDefaultAgentGateway,
+  defaultLocalDataDir,
+  defaultLocalProfileId,
+  SqliteStateStore,
+  type ChatRequest,
+  type MemoryType,
+  type StreamEvent,
+  type UserSettings,
+} from "../../../packages/agent-gateway/src/index.ts";
+import { authenticateLocal, loadOrCreateLocalToken, localTokenRequired, writeUnauthorized } from "./auth.ts";
+import { loadLocalEnv } from "./localEnv.ts";
+
+loadLocalEnv();
 
 const WEB_INDEX = new URL("../../web/index.html", import.meta.url);
-const MAX_BODY_BYTES = Number(process.env.FLOWSKY_MAX_BODY_BYTES ?? 1_000_000);
+const MAX_BODY_BYTES = Number(process.env.LIUKONG_MAX_BODY_BYTES ?? process.env.FLOWSKY_MAX_BODY_BYTES ?? 1_000_000);
 const MEMORY_TYPES = new Set<MemoryType>([
   "session_memory",
   "profile_memory",
@@ -23,6 +36,14 @@ const USER_SETTING_KEYS = new Set<keyof UserSettings>([
   "quiet_hours",
   "adult_romance_enabled",
 ]);
+
+export interface CreateApiServerOptions {
+  gateway?: AgentGateway;
+  gatewayFactory?: (apiKey: string) => AgentGateway;
+  stateStore?: SqliteStateStore;
+  localToken?: string;
+  requireLocalToken?: boolean;
+}
 
 function html(res: ServerResponse, status: number, body: string): void {
   res.writeHead(status, {
@@ -62,8 +83,8 @@ function sseWrite(res: ServerResponse, event: StreamEvent): void {
   res.write(`data: ${JSON.stringify(event.data)}\n\n`);
 }
 
-function requestedUserId(url: URL, body?: Partial<ChatRequest>): string | null {
-  return body?.user_id ?? url.searchParams.get("user_id");
+function requestedProfileId(url: URL, body?: Partial<ChatRequest>): string | null {
+  return body?.profile_id ?? body?.user_id ?? url.searchParams.get("profile_id") ?? url.searchParams.get("user_id");
 }
 
 function sanitizeMemoryPatch(raw: unknown): { content?: string; memory_type?: MemoryType } {
@@ -111,96 +132,151 @@ function sanitizeSettingsPatch(raw: unknown): Partial<UserSettings> {
   return patch;
 }
 
+function providerApiKey(req: IncomingMessage): string {
+  const headerKey = firstHeader(req.headers["x-liukong-api-key"] ?? req.headers["x-flowsky-api-key"]);
+  return (headerKey || process.env.DEEPSEEK_API_KEY || "").trim();
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 function statusForError(code: string): number {
   if (code === "request_body_too_large") return 413;
-  if (code === "bad_json" || code === "bad_request") return 400;
+  if (code === "bad_json" || code === "bad_request" || code === "missing_provider_key") return 400;
   return 500;
 }
 
-export function createApiServer(gateway: AgentGateway = createDefaultAgentGateway()) {
+function withLocalToken(indexHtml: string, localToken: string, profileId: string): string {
+  const boot = `<script>window.__LIUKONG_LOCAL__=${JSON.stringify({ localToken, profileId })};</script>`;
+  return indexHtml.replace("</head>", `${boot}\n  </head>`);
+}
+
+export function createApiServer(input: AgentGateway | CreateApiServerOptions = {}) {
+  const options: CreateApiServerOptions = input instanceof AgentGateway ? { gateway: input } : input;
+  const stateStore = options.stateStore ?? (options.gateway ? undefined : new SqliteStateStore());
+  const baseGateway = options.gateway ?? createDefaultAgentGateway({ stateStore, allowMissingApiKey: true });
+  const requireToken = options.requireLocalToken ?? localTokenRequired();
+  const localToken = options.localToken ?? (requireToken ? loadOrCreateLocalToken(defaultLocalDataDir()) : "test-local-token");
+  const defaultProfileId = defaultLocalProfileId();
+
+  function auth(req: IncomingMessage, url: URL, body?: Partial<ChatRequest>) {
+    return authenticateLocal(req, {
+      localToken,
+      requireLocalToken: requireToken,
+      requestedProfileId: requestedProfileId(url, body),
+    });
+  }
+
+  function gatewayForChat(apiKey: string): AgentGateway {
+    if (options.gateway) return options.gateway;
+    if (options.gatewayFactory) return options.gatewayFactory(apiKey);
+    if (!stateStore) return baseGateway;
+    return createDefaultAgentGateway({ apiKey, stateStore });
+  }
+
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
       if (req.method === "GET" && url.pathname === "/") {
-        return html(res, 200, readFileSync(WEB_INDEX, "utf8"));
+        return html(res, 200, withLocalToken(readFileSync(WEB_INDEX, "utf8"), localToken, defaultProfileId));
       }
 
       if (req.method === "GET" && url.pathname === "/health") {
-        return json(res, 200, { ok: true });
+        return json(res, 200, { ok: true, mode: "local", profile_id: defaultProfileId });
       }
 
       if (req.method === "POST" && url.pathname === "/chat") {
         const body = await readJson<ChatRequest>(req);
-        const auth = authenticate(req, requestedUserId(url, body));
-        if (!auth) return writeUnauthorized(res);
-        const response = await gateway.chat({ ...body, user_id: auth.userId });
+        const localAuth = auth(req, url, body);
+        if (!localAuth) return writeUnauthorized(res);
+        const apiKey = providerApiKey(req);
+        if (!apiKey && !options.gateway) throw new Error("missing_provider_key");
+        const response = await gatewayForChat(apiKey).chat({ ...body, user_id: localAuth.profileId, profile_id: localAuth.profileId });
         return json(res, 200, response);
       }
 
       if (req.method === "POST" && url.pathname === "/chat/stream") {
         const body = await readJson<ChatRequest>(req);
-        const auth = authenticate(req, requestedUserId(url, body));
-        if (!auth) return writeUnauthorized(res);
+        const localAuth = auth(req, url, body);
+        if (!localAuth) return writeUnauthorized(res);
+        const apiKey = providerApiKey(req);
+        if (!apiKey && !options.gateway) throw new Error("missing_provider_key");
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache, no-transform",
           connection: "keep-alive",
           "x-accel-buffering": "no",
         });
-        for await (const event of gateway.stream({ ...body, user_id: auth.userId })) sseWrite(res, event);
+        for await (const event of gatewayForChat(apiKey).stream({ ...body, user_id: localAuth.profileId, profile_id: localAuth.profileId })) sseWrite(res, event);
         return res.end();
       }
 
+      if (req.method === "GET" && url.pathname === "/local/export") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        return json(res, 200, stateStore.exportLocalData(localAuth.profileId));
+      }
+
+      if (req.method === "POST" && url.pathname === "/local/reset") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        stateStore.clearLocalData(localAuth.profileId);
+        return json(res, 200, { ok: true });
+      }
+
       if (req.method === "GET" && url.pathname === "/memories") {
-        const auth = authenticate(req, requestedUserId(url));
-        if (!auth) return writeUnauthorized(res);
-        return json(res, 200, { memories: gateway.listMemories(auth.userId) });
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        return json(res, 200, { memories: baseGateway.listMemories(localAuth.profileId) });
       }
 
       const confirmMatch = url.pathname.match(/^\/memories\/([^/]+)\/(confirm|reject)$/);
       if (req.method === "POST" && confirmMatch) {
-        const auth = authenticate(req, requestedUserId(url));
-        if (!auth) return writeUnauthorized(res);
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
         const memoryId = decodeURIComponent(confirmMatch[1]);
         if (confirmMatch[2] === "reject") {
-          return json(res, 200, { rejected: gateway.rejectMemory(auth.userId, memoryId) });
+          return json(res, 200, { rejected: baseGateway.rejectMemory(localAuth.profileId, memoryId) });
         }
         const patch = sanitizeMemoryPatch(await readJson<unknown>(req));
-        const memory = gateway.confirmMemory(auth.userId, memoryId, patch);
+        const memory = baseGateway.confirmMemory(localAuth.profileId, memoryId, patch);
         return json(res, memory ? 200 : 404, memory ? { memory } : { error: "memory_not_found" });
       }
 
       const memoryMatch = url.pathname.match(/^\/memories\/([^/]+)$/);
       if ((req.method === "PATCH" || req.method === "POST") && memoryMatch) {
-        const auth = authenticate(req, requestedUserId(url));
-        if (!auth) return writeUnauthorized(res);
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
         const patch = sanitizeMemoryPatch(await readJson<unknown>(req));
-        const memory = gateway.updateMemory(auth.userId, decodeURIComponent(memoryMatch[1]), patch);
+        const memory = baseGateway.updateMemory(localAuth.profileId, decodeURIComponent(memoryMatch[1]), patch);
         return json(res, memory ? 200 : 404, memory ? { memory } : { error: "memory_not_found" });
       }
       if (req.method === "DELETE" && memoryMatch) {
-        const auth = authenticate(req, requestedUserId(url));
-        if (!auth) return writeUnauthorized(res);
-        const deleted = gateway.deleteMemory(auth.userId, decodeURIComponent(memoryMatch[1]));
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        const deleted = baseGateway.deleteMemory(localAuth.profileId, decodeURIComponent(memoryMatch[1]));
         return json(res, deleted ? 200 : 404, { deleted });
       }
 
       if (req.method === "GET" && url.pathname === "/settings") {
-        const auth = authenticate(req, requestedUserId(url));
-        if (!auth) return writeUnauthorized(res);
-        return json(res, 200, gateway.getUserSettings(auth.userId));
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        return json(res, 200, baseGateway.getUserSettings(localAuth.profileId));
       }
 
       if ((req.method === "PATCH" || req.method === "POST") && url.pathname === "/settings") {
         const patch = sanitizeSettingsPatch(await readJson<unknown>(req));
-        const auth = authenticate(req, requestedUserId(url));
-        if (!auth) return writeUnauthorized(res);
-        return json(res, 200, gateway.updateUserSettings(auth.userId, patch));
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        return json(res, 200, baseGateway.updateUserSettings(localAuth.profileId, patch));
       }
 
       return json(res, 404, { error: "not_found" });
@@ -215,15 +291,15 @@ export function createApiServer(gateway: AgentGateway = createDefaultAgentGatewa
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const port = Number(process.env.PORT ?? 3000);
-  const host = process.env.HOST ?? "127.0.0.1";
-  const hasAuth = Boolean(process.env.FLOWSKY_JWT_SECRET || process.env.FLOWSKY_API_AUTH_TOKEN);
+  const port = Number(process.env.LIUKONG_PORT ?? process.env.PORT ?? 3000);
+  const host = process.env.LIUKONG_HOST ?? process.env.HOST ?? "127.0.0.1";
   const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
-  if (!loopback && !hasAuth) {
-    console.error("Refusing to bind non-loopback host without FLOWSKY_JWT_SECRET or FLOWSKY_API_AUTH_TOKEN");
+  const allowNonLoopback = process.env.LIUKONG_ALLOW_NON_LOOPBACK === "true";
+  if (!loopback && !allowNonLoopback) {
+    console.error("Refusing to bind non-loopback host in local-first mode. Set LIUKONG_ALLOW_NON_LOOPBACK=true only inside a trusted container/sandbox.");
     process.exit(1);
   }
   createApiServer().listen(port, host, () => {
-    console.log(`FlowSky API listening on http://${host}:${port}`);
+    console.log(`Liukong local server listening on http://${host}:${port}`);
   });
 }
