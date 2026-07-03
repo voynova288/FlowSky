@@ -1,6 +1,8 @@
+import { LocalCharacterStore } from "../character/LocalCharacterStore.ts";
 import { AgentGateway } from "../gateway/AgentGateway.ts";
 import { MemoryController } from "../memory/MemoryController.ts";
 import { ToolPermissionGate } from "../safety/ToolPermissionGate.ts";
+import { PromptAssembler } from "../prompts/PromptAssembler.ts";
 import { SqliteRequestLogger } from "../storage/SqliteRequestLogger.ts";
 import { SqliteStateStore } from "../storage/SqliteStateStore.ts";
 import { ToolRouter } from "../tools/ToolRouter.ts";
@@ -18,8 +20,10 @@ export interface DefaultAgentGatewayOptions {
 export function createDefaultAgentGateway(options: DefaultAgentGatewayOptions = {}): AgentGateway {
   const stateStore = options.stateStore ?? new SqliteStateStore();
   const provider = options.provider ?? createDefaultProvider(options);
+  const characterStore = new LocalCharacterStore();
   return new AgentGateway({
     provider,
+    promptAssembler: new PromptAssembler({ characterStore }),
     memoryController: new MemoryController({ store: stateStore }),
     toolRouter: new ToolRouter(new ToolPermissionGate(), stateStore),
     requestLogger: new SqliteRequestLogger(stateStore),

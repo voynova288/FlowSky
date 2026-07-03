@@ -5,7 +5,10 @@ import {
   createDefaultAgentGateway,
   defaultLocalDataDir,
   defaultLocalProfileId,
+  LocalCharacterStore,
   SqliteStateStore,
+  validateCharacterCard,
+  type CharacterCard,
   type ChatRequest,
   type MemoryType,
   type StreamEvent,
@@ -41,6 +44,7 @@ export interface CreateApiServerOptions {
   gateway?: AgentGateway;
   gatewayFactory?: (apiKey: string) => AgentGateway;
   stateStore?: SqliteStateStore;
+  characterStore?: LocalCharacterStore;
   localToken?: string;
   requireLocalToken?: boolean;
 }
@@ -132,6 +136,29 @@ function sanitizeSettingsPatch(raw: unknown): Partial<UserSettings> {
   return patch;
 }
 
+function sanitizeSessionPatch(raw: unknown): { title?: string; status?: "active" | "archived" } {
+  if (!isObject(raw)) throw new Error("bad_request");
+  const patch: { title?: string; status?: "active" | "archived" } = {};
+  for (const key of Object.keys(raw)) {
+    if (key !== "title" && key !== "status") throw new Error("bad_request");
+  }
+  if ("title" in raw) {
+    if (typeof raw.title !== "string" || raw.title.length > 120) throw new Error("bad_request");
+    patch.title = raw.title.trim().slice(0, 80);
+  }
+  if ("status" in raw) {
+    if (raw.status !== "active" && raw.status !== "archived") throw new Error("bad_request");
+    patch.status = raw.status;
+  }
+  return patch;
+}
+
+function sanitizeSessionId(raw: string): string {
+  const id = decodeURIComponent(raw).trim();
+  if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(id)) throw new Error("bad_request");
+  return id;
+}
+
 function providerApiKey(req: IncomingMessage): string {
   const headerKey = firstHeader(req.headers["x-liukong-api-key"] ?? req.headers["x-flowsky-api-key"]);
   return (headerKey || process.env.DEEPSEEK_API_KEY || "").trim();
@@ -147,7 +174,7 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
 
 function statusForError(code: string): number {
   if (code === "request_body_too_large") return 413;
-  if (code === "bad_json" || code === "bad_request" || code === "missing_provider_key") return 400;
+  if (code === "bad_json" || code === "bad_request" || code === "bad_character_card" || code === "missing_provider_key") return 400;
   return 500;
 }
 
@@ -160,6 +187,7 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
   const options: CreateApiServerOptions = input instanceof AgentGateway ? { gateway: input } : input;
   const stateStore = options.stateStore ?? (options.gateway ? undefined : new SqliteStateStore());
   const baseGateway = options.gateway ?? createDefaultAgentGateway({ stateStore, allowMissingApiKey: true });
+  let characterStore = options.characterStore;
   const requireToken = options.requireLocalToken ?? localTokenRequired();
   const localToken = options.localToken ?? (requireToken ? loadOrCreateLocalToken(defaultLocalDataDir()) : "test-local-token");
   const defaultProfileId = defaultLocalProfileId();
@@ -170,6 +198,11 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
       requireLocalToken: requireToken,
       requestedProfileId: requestedProfileId(url, body),
     });
+  }
+
+  function localCharacterStore(): LocalCharacterStore {
+    characterStore ??= new LocalCharacterStore();
+    return characterStore;
   }
 
   function gatewayForChat(apiKey: string): AgentGateway {
@@ -189,6 +222,75 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
 
       if (req.method === "GET" && url.pathname === "/health") {
         return json(res, 200, { ok: true, mode: "local", profile_id: defaultProfileId });
+      }
+
+      if (req.method === "GET" && url.pathname === "/character") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        return json(res, 200, { character: localCharacterStore().loadCharacter("default_girlfriend") });
+      }
+
+      if ((req.method === "PATCH" || req.method === "PUT") && url.pathname === "/character") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        const body = await readJson<{ character?: CharacterCard } | CharacterCard>(req);
+        const rawCard = isObject(body) && "character" in body ? body.character : body;
+        const character = localCharacterStore().saveCharacter("default_girlfriend", validateCharacterCard(rawCard));
+        return json(res, 200, { character });
+      }
+
+      if (req.method === "POST" && url.pathname === "/character/reset") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        return json(res, 200, { character: localCharacterStore().resetCharacter("default_girlfriend") });
+      }
+
+      if (req.method === "GET" && url.pathname === "/sessions") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        const includeArchived = url.searchParams.get("include_archived") === "true";
+        const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 50)));
+        return json(res, 200, { sessions: stateStore.listSessions(localAuth.profileId, limit, includeArchived) });
+      }
+
+      if (req.method === "POST" && url.pathname === "/sessions") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        const body = await readJson<{ id?: string; title?: string }>(req);
+        const session = stateStore.createSession(localAuth.profileId, {
+          id: body.id ? sanitizeSessionId(body.id) : undefined,
+          title: typeof body.title === "string" ? body.title : undefined,
+        });
+        return json(res, 200, { session });
+      }
+
+      const sessionMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+      if (req.method === "GET" && sessionMessagesMatch) {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        const sessionId = sanitizeSessionId(sessionMessagesMatch[1]);
+        if (!stateStore.getSession(localAuth.profileId, sessionId)) return json(res, 404, { error: "session_not_found" });
+        const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 200)));
+        return json(res, 200, { messages: stateStore.listSessionMessages(localAuth.profileId, sessionId, limit) });
+      }
+
+      const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
+      if (req.method === "PATCH" && sessionMatch) {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        const session = stateStore.updateSession(localAuth.profileId, sanitizeSessionId(sessionMatch[1]), sanitizeSessionPatch(await readJson<unknown>(req)));
+        return json(res, session ? 200 : 404, session ? { session } : { error: "session_not_found" });
+      }
+      if (req.method === "DELETE" && sessionMatch) {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        const deleted = stateStore.deleteSession(localAuth.profileId, sanitizeSessionId(sessionMatch[1]));
+        return json(res, deleted ? 200 : 404, { deleted });
       }
 
       if (req.method === "POST" && url.pathname === "/chat") {

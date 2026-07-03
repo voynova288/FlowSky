@@ -21,11 +21,13 @@ test("sqlite migrations create expected schema versions", () => {
     store.close();
     const db = new DatabaseSync(dbPath);
     const rows = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: number }>;
-    assert.deepEqual(rows.map((row) => row.version), [1, 2, 3]);
+    assert.deepEqual(rows.map((row) => row.version), [1, 2, 3, 4]);
     const toolCalls = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'").get();
     assert.ok(toolCalls);
     const profiles = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='local_profiles'").get();
     assert.ok(profiles);
+    const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+    assert.ok(sessionColumns.some((column) => column.name === "title"));
     db.close();
   });
 });
@@ -54,6 +56,26 @@ test("sqlite settings and memories persist across store instances", () => {
     assert.equal(second.delete("u1", saved.id), true);
     assert.equal(second.retrieve("u1", "短句").length, 0);
     second.close();
+  });
+});
+
+test("sqlite session manager creates, lists, renames, scopes, and archives sessions", () => {
+  withTempDb((dbPath) => {
+    const store = new SqliteStateStore(dbPath);
+    const created = store.createSession("default", { id: "s1", title: "第一段聊天" });
+    assert.equal(created.title, "第一段聊天");
+    store.saveMessage({ id: "m1", session_id: "s1", user_id: "default", role: "user", content: "你好" });
+    store.saveMessage({ id: "m2", session_id: "s1", user_id: "default", role: "assistant", content: "我在" });
+    store.saveMessage({ id: "m3", session_id: "s1", user_id: "other", role: "user", content: "隔离" });
+    assert.equal(store.listSessions("default").length, 1);
+    assert.equal(store.listSessions("other").length, 1);
+    assert.equal(store.listSessionMessages("default", "s1").map((m) => m.content).join("/"), "你好/我在");
+    const renamed = store.updateSession("default", "s1", { title: "改名" });
+    assert.equal(renamed?.title, "改名");
+    assert.equal(store.deleteSession("default", "s1"), true);
+    assert.equal(store.listSessions("default").length, 0);
+    assert.equal(store.listSessions("default", 50, true)[0].status, "archived");
+    store.close();
   });
 });
 

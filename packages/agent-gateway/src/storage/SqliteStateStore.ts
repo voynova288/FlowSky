@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { defaultLocalDbPath, defaultLocalProfileId } from "../local/paths.ts";
 import { DatabaseSync } from "node:sqlite";
-import type { LLMMessage, MemoryCandidate, StoredMemory, ToolCallRecord, UserSettings } from "../types.ts";
+import type { LLMMessage, LocalChatMessage, LocalSession, MemoryCandidate, StoredMemory, ToolCallRecord, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import type { MemoryStoreLike } from "../memory/MemoryStore.ts";
 import { DEFAULT_USER_SETTINGS, type SettingsStoreLike } from "../tools/tools/settings_tools.ts";
@@ -120,6 +120,14 @@ const MIGRATIONS = [
       CREATE VIEW IF NOT EXISTS local_audit_logs AS SELECT * FROM audit_logs;
     `,
   },
+  {
+    version: 4,
+    name: "session_titles_and_message_indexes",
+    sql: `
+      ALTER TABLE sessions ADD COLUMN title TEXT;
+      CREATE INDEX IF NOT EXISTS idx_messages_user_session_created ON messages(user_id, session_id, created_at);
+    `,
+  },
 ] as const;
 
 export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
@@ -135,12 +143,82 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     this.db.close();
   }
 
+  createSession(userId: string, options: { id?: string; title?: string } = {}): LocalSession {
+    const now = nowIso();
+    const id = options.id ?? randomId("sess");
+    const dbId = scopedSessionId(userId, id);
+    const title = sanitizeTitle(options.title) ?? "新会话";
+    this.db
+      .prepare(`INSERT INTO sessions (id, user_id, created_at, updated_at, status, title)
+        VALUES (?, ?, ?, ?, 'active', ?)
+        ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`)
+      .run(dbId, userId, now, now, title);
+    return this.getSession(userId, id)!;
+  }
+
+  listSessions(userId: string, limit = 50, includeArchived = false): LocalSession[] {
+    const rows = this.db
+      .prepare(`SELECT s.*,
+          COUNT(m.id) AS message_count,
+          (SELECT content FROM messages m2 WHERE m2.user_id = s.user_id AND m2.session_id = s.id ORDER BY m2.created_at DESC, m2.rowid DESC LIMIT 1) AS last_message_preview
+        FROM sessions s
+        LEFT JOIN messages m ON m.user_id = s.user_id AND m.session_id = s.id
+        WHERE s.user_id = ? AND (? = 1 OR s.status = 'active')
+        GROUP BY s.id
+        ORDER BY s.updated_at DESC
+        LIMIT ?`)
+      .all(userId, includeArchived ? 1 : 0, limit);
+    return rows.map(rowToSession);
+  }
+
+  getSession(userId: string, sessionId: string): LocalSession | null {
+    const row = this.db
+      .prepare(`SELECT s.*,
+          COUNT(m.id) AS message_count,
+          (SELECT content FROM messages m2 WHERE m2.user_id = s.user_id AND m2.session_id = s.id ORDER BY m2.created_at DESC, m2.rowid DESC LIMIT 1) AS last_message_preview
+        FROM sessions s
+        LEFT JOIN messages m ON m.user_id = s.user_id AND m.session_id = s.id
+        WHERE s.user_id = ? AND s.id = ?
+        GROUP BY s.id`)
+      .get(userId, scopedSessionId(userId, sessionId));
+    return row ? rowToSession(row) : null;
+  }
+
+  updateSession(userId: string, sessionId: string, patch: { title?: string; status?: "active" | "archived" }): LocalSession | null {
+    const existing = this.getSession(userId, sessionId);
+    if (!existing) return null;
+    const title = patch.title === undefined ? existing.title : sanitizeTitle(patch.title);
+    const status = patch.status ?? existing.status;
+    if (status !== "active" && status !== "archived") throw new Error("bad_request");
+    const now = nowIso();
+    this.db
+      .prepare("UPDATE sessions SET title = ?, status = ?, updated_at = ? WHERE user_id = ? AND id = ?")
+      .run(title ?? null, status, now, userId, scopedSessionId(userId, sessionId));
+    return this.getSession(userId, sessionId);
+  }
+
+  deleteSession(userId: string, sessionId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE sessions SET status = 'archived', updated_at = ? WHERE user_id = ? AND id = ? AND status != 'archived'")
+      .run(nowIso(), userId, scopedSessionId(userId, sessionId));
+    return Number(result.changes ?? 0) > 0;
+  }
+
+  listSessionMessages(userId: string, sessionId: string, limit = 200): LocalChatMessage[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM messages
+        WHERE user_id = ? AND session_id = ?
+        ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+      .all(userId, scopedSessionId(userId, sessionId), limit);
+    return rows.reverse().map(rowToMessage);
+  }
+
   recentMessages(userId: string, sessionId: string, limit = 12): LLMMessage[] {
     const rows = this.db
       .prepare(`SELECT role, content FROM messages
         WHERE user_id = ? AND session_id = ? AND role IN ('user', 'assistant')
-        ORDER BY created_at DESC LIMIT ?`)
-      .all(userId, sessionId, limit) as Array<{ role: "user" | "assistant"; content: string }>;
+        ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+      .all(userId, scopedSessionId(userId, sessionId), limit) as Array<{ role: "user" | "assistant"; content: string }>;
     return rows.reverse().map((row) => ({ role: row.role, content: row.content }));
   }
 
@@ -154,17 +232,21 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     avatar_action?: string;
   }): void {
     const now = nowIso();
+    const dbSessionId = scopedSessionId(params.user_id, params.session_id);
+    const title = params.role === "user" ? sanitizeTitle(params.content) : undefined;
     this.db
-      .prepare(`INSERT INTO sessions (id, user_id, created_at, updated_at, status)
-        VALUES (?, ?, ?, ?, 'active')
-        ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`)
-      .run(params.session_id, params.user_id, now, now);
+      .prepare(`INSERT INTO sessions (id, user_id, created_at, updated_at, status, title)
+        VALUES (?, ?, ?, ?, 'active', ?)
+        ON CONFLICT(id) DO UPDATE SET
+          updated_at = excluded.updated_at,
+          title = COALESCE(sessions.title, excluded.title)`)
+      .run(dbSessionId, params.user_id, now, now, title ?? null);
     this.db
       .prepare(`INSERT INTO messages (id, session_id, user_id, role, content, emotion, avatar_action, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         params.id,
-        params.session_id,
+        dbSessionId,
         params.user_id,
         params.role,
         params.content,
@@ -355,10 +437,10 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
   exportLocalData(userId = defaultLocalProfileId()): unknown {
     const settings = this.get(userId);
     const memories = this.list(userId);
-    const sessions = this.db.prepare("SELECT * FROM sessions WHERE user_id = ? ORDER BY updated_at DESC").all(userId);
-    const messages = this.db
-      .prepare("SELECT * FROM messages WHERE user_id = ? ORDER BY created_at ASC")
-      .all(userId);
+    const sessions = this.listSessions(userId, 500, true);
+    const messages = (this.db
+      .prepare("SELECT * FROM messages WHERE user_id = ? ORDER BY created_at ASC, rowid ASC")
+      .all(userId) as any[]).map(rowToMessage);
     const relationship = this.db.prepare("SELECT * FROM relationship_states WHERE user_id = ?").get(userId) ?? null;
     const toolCalls = this.db.prepare("SELECT * FROM tool_calls WHERE user_id = ? ORDER BY created_at DESC").all(userId);
     const auditLogs = this.db
@@ -444,6 +526,47 @@ function rowToMemory(row: any): StoredMemory {
     updated_at: row.updated_at,
     deleted_at: row.deleted_at ?? undefined,
   };
+}
+
+function rowToSession(row: any): LocalSession {
+  return {
+    id: unscopedSessionId(row.user_id, row.id),
+    user_id: row.user_id,
+    title: row.title ?? undefined,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    status: row.status === "archived" ? "archived" : "active",
+    last_message_preview: row.last_message_preview ? String(row.last_message_preview).slice(0, 120) : undefined,
+    message_count: Number(row.message_count ?? 0),
+  };
+}
+
+function rowToMessage(row: any): LocalChatMessage {
+  return {
+    id: row.id,
+    session_id: unscopedSessionId(row.user_id, row.session_id),
+    user_id: row.user_id,
+    role: row.role,
+    content: row.content,
+    emotion: row.emotion ?? undefined,
+    avatar_action: row.avatar_action ?? undefined,
+    created_at: row.created_at,
+  };
+}
+
+function sanitizeTitle(title: string | undefined): string | undefined {
+  const trimmed = title?.trim().replace(/\s+/g, " ").slice(0, 80);
+  return trimmed || undefined;
+}
+
+function scopedSessionId(userId: string, sessionId: string): string {
+  if (sessionId.startsWith(`${userId}::`)) return sessionId;
+  return `${userId}::${sessionId}`;
+}
+
+function unscopedSessionId(userId: string, sessionId: string): string {
+  const prefix = `${userId}::`;
+  return sessionId.startsWith(prefix) ? sessionId.slice(prefix.length) : sessionId;
 }
 
 export function defaultStateDbPath(): string {

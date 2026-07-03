@@ -10,11 +10,12 @@ npm run dev:api
 
 Open `http://127.0.0.1:3000/`.
 
-Default local state:
+Default local state (SQLite includes settings, memories, sessions/messages, tool calls, and audit metadata):
 
 ```text
 ~/.liukong/liukong.db
 ~/.liukong/local_token
+~/.liukong/characters/default_girlfriend.json
 ```
 
 For repo-local development state:

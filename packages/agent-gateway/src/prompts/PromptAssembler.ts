@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CharacterCard, LLMMessage, RelationshipState, StoredMemory, UserSettings } from "../types.ts";
+import { validateCharacterCard } from "../character/LocalCharacterStore.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -15,11 +16,26 @@ export interface PromptAssemblerInput {
   current_user_input: string;
 }
 
+export interface CharacterStoreLike {
+  loadCharacter(id?: string): CharacterCard;
+}
+
+export interface PromptAssemblerOptions {
+  baseDir?: string;
+  characterStore?: CharacterStoreLike;
+}
+
 export class PromptAssembler {
   private readonly baseDir: string;
+  private readonly characterStore?: CharacterStoreLike;
 
-  constructor(baseDir = here) {
-    this.baseDir = baseDir;
+  constructor(options: string | PromptAssemblerOptions = here) {
+    if (typeof options === "string") {
+      this.baseDir = options;
+    } else {
+      this.baseDir = options.baseDir ?? here;
+      this.characterStore = options.characterStore;
+    }
   }
 
   assemble(input: PromptAssemblerInput): LLMMessage[] {
@@ -48,13 +64,9 @@ export class PromptAssembler {
   }
 
   loadCharacter(id = "default_girlfriend"): CharacterCard {
+    if (this.characterStore) return this.characterStore.loadCharacter(id);
     const raw = readFileSync(join(this.baseDir, "character_cards", `${id}.json`), "utf8");
-    const card = JSON.parse(raw) as CharacterCard;
-    if (card.age_style !== "adult") throw new Error("Romance character cards must be adult-coded");
-    if (!card.boundaries.do_not_claim_to_be_human) {
-      throw new Error("Character card must forbid claiming to be human");
-    }
-    return card;
+    return validateCharacterCard(JSON.parse(raw));
   }
 
   private loadText(file: string): string {

@@ -29,7 +29,8 @@
       .panel { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.1); }
       .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin: 8px 0; }
       .row.stack { grid-template-columns: 1fr; }
-      .memory { padding: 10px; border-radius: 12px; background: rgba(255,255,255,.08); margin: 9px 0; }
+      .memory, .session { padding: 10px; border-radius: 12px; background: rgba(255,255,255,.08); margin: 9px 0; }
+      .session.active { outline: 1px solid #f0b6ff; }
       .memory.pending { outline: 1px solid #f0b6ff; }
       .memory-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 8px; }
       @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } .chat { min-height: 70vh; } }
@@ -57,12 +58,26 @@
           <button class="secondary" id="saveClient" type="button">保存本地会话设置</button>
         </section>
         <section class="panel">
+          <h2>会话</h2>
+          <div class="row"><label>当前 session</label><input id="sessionId" value="local-session" /></div>
+          <button id="newSession" type="button">新会话</button>
+          <button class="secondary" id="refreshSessions" type="button">刷新</button>
+          <div id="sessions"></div>
+        </section>
+        <section class="panel">
           <h2>用户设置</h2>
           <div class="row"><label>长期记忆</label><input id="memoryEnabled" type="checkbox" /></div>
           <div class="row"><label>恋爱真实感</label><select id="romanceLevel"><option value="0">0</option><option value="1">1</option><option value="2">2</option></select></div>
           <div class="row"><label>Avatar</label><input id="avatarEnabled" type="checkbox" /></div>
           <button class="secondary" id="loadSettings" type="button">读取</button>
           <button id="saveSettings" type="button">保存</button>
+        </section>
+        <section class="panel">
+          <h2>角色卡</h2>
+          <div class="row stack"><label>default_girlfriend.json</label><textarea id="characterJson" rows="8" spellcheck="false"></textarea></div>
+          <button class="secondary" id="loadCharacter" type="button">读取角色</button>
+          <button id="saveCharacter" type="button">保存角色</button>
+          <button class="secondary" id="resetCharacter" type="button">恢复默认</button>
         </section>
         <section class="panel">
           <h2>记忆</h2>
@@ -80,9 +95,10 @@
       const boot = window.__LIUKONG_LOCAL__ || { localToken: '', profileId: 'default' };
       const $ = (id) => document.querySelector(id);
       const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
-      const apiKey = $('#apiKey'), profileId = $('#profileId'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), memoriesEl = $('#memories');
+      const apiKey = $('#apiKey'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), characterJson = $('#characterJson'), memoriesEl = $('#memories');
       apiKey.value = sessionStorage.getItem('liukong.deepseek_api_key') || '';
       profileId.value = localStorage.getItem('liukong.profile_id') || boot.profileId || 'default';
+      sessionId.value = localStorage.getItem('liukong.session_id') || 'local-session';
 
       function headers(json = false, includeApiKey = false) {
         const h = json ? { 'content-type': 'application/json' } : {};
@@ -95,12 +111,53 @@
       function append(role, text = '') { const box = document.createElement('div'); box.className = `msg ${role}`; box.textContent = text; messages.appendChild(box); messages.scrollTop = messages.scrollHeight; return box; }
       function parseSse(buffer, onEvent) { const parts = buffer.split('\n\n'); const rest = parts.pop() || ''; for (const part of parts) { const event = part.split('\n').find(l => l.startsWith('event:'))?.slice(6).trim(); const data = part.split('\n').find(l => l.startsWith('data:'))?.slice(5).trim(); if (event && data) onEvent(event, JSON.parse(data)); } return rest; }
 
-      $('#saveClient').onclick = () => { localStorage.setItem('liukong.profile_id', profileId.value.trim() || 'default'); sessionStorage.setItem('liukong.deepseek_api_key', apiKey.value.trim()); statusEl.textContent = '本地会话设置已保存；API key 仅保存到 sessionStorage'; };
+      $('#saveClient').onclick = () => { localStorage.setItem('liukong.profile_id', profileId.value.trim() || 'default'); localStorage.setItem('liukong.session_id', sessionId.value.trim() || 'local-session'); sessionStorage.setItem('liukong.deepseek_api_key', apiKey.value.trim()); statusEl.textContent = '本地会话设置已保存；API key 仅保存到 sessionStorage'; };
       $('#loadSettings').onclick = () => loadSettings().catch(showError);
       $('#saveSettings').onclick = () => saveSettings().catch(showError);
+      $('#newSession').onclick = () => newSession().catch(showError);
+      $('#refreshSessions').onclick = () => loadSessions().catch(showError);
       $('#refreshMemories').onclick = () => loadMemories().catch(showError);
+      $('#loadCharacter').onclick = () => loadCharacter().catch(showError);
+      $('#saveCharacter').onclick = () => saveCharacter().catch(showError);
+      $('#resetCharacter').onclick = () => resetCharacter().catch(showError);
       $('#exportData').onclick = () => exportData().catch(showError);
       $('#resetData').onclick = () => resetData().catch(showError);
+
+      async function newSession() {
+        const res = await fetch('/sessions' + profileQuery(), { method: 'POST', headers: headers(true), body: JSON.stringify({ title: '新会话' }) });
+        if (!res.ok) throw new Error('session create failed: ' + res.status);
+        const body = await res.json();
+        setSession(body.session.id);
+        messages.innerHTML = '';
+        await loadSessions();
+      }
+      async function loadSessions() {
+        const res = await fetch('/sessions' + profileQuery(), { headers: headers() });
+        if (!res.ok) return;
+        const body = await res.json();
+        sessionsEl.innerHTML = '';
+        for (const s of body.sessions || []) renderSession(s);
+      }
+      async function loadSessionMessages(id) {
+        const res = await fetch(`/sessions/${encodeURIComponent(id)}/messages` + profileQuery(), { headers: headers() });
+        if (!res.ok) throw new Error('messages load failed: ' + res.status);
+        const body = await res.json();
+        messages.innerHTML = '';
+        for (const m of body.messages || []) append(m.role === 'user' ? 'user' : 'ai', m.content || '');
+      }
+      function renderSession(s) {
+        const div = document.createElement('div'); div.className = 'session' + (s.id === sessionId.value ? ' active' : '');
+        const title = document.createElement('div'); title.textContent = s.title || s.last_message_preview || s.id;
+        const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${s.message_count || 0} 条 · ${s.updated_at || ''}`;
+        const actions = document.createElement('div'); actions.className = 'memory-actions';
+        actions.append(button('打开', async () => { setSession(s.id); await loadSessionMessages(s.id); await loadSessions(); }));
+        actions.append(button('改名', async () => { const next = prompt('会话标题', s.title || ''); if (next === null) return; await renameSession(s.id, next); }));
+        actions.append(button('删除', async () => { if (!confirm('删除这个会话？')) return; await deleteSession(s.id); }, 'danger'));
+        div.append(title, meta, actions); sessionsEl.append(div);
+      }
+      function setSession(id) { sessionId.value = id; localStorage.setItem('liukong.session_id', id); }
+      async function renameSession(id, title) { await fetch(`/sessions/${encodeURIComponent(id)}` + profileQuery(), { method: 'PATCH', headers: headers(true), body: JSON.stringify({ title }) }); await loadSessions(); }
+      async function deleteSession(id) { await fetch(`/sessions/${encodeURIComponent(id)}` + profileQuery(), { method: 'DELETE', headers: headers() }); if (id === sessionId.value) { messages.innerHTML = ''; setSession('local-session'); } await loadSessions(); }
 
       async function loadSettings() {
         const res = await fetch('/settings' + profileQuery(), { headers: headers() });
@@ -119,6 +176,26 @@
         const body = await res.json();
         memoriesEl.innerHTML = '';
         for (const m of body.memories || []) renderMemory(m);
+      }
+      async function loadCharacter() {
+        const res = await fetch('/character' + profileQuery(), { headers: headers() });
+        if (!res.ok) throw new Error('character load failed: ' + res.status);
+        const body = await res.json();
+        characterJson.value = JSON.stringify(body.character, null, 2);
+      }
+      async function saveCharacter() {
+        const character = JSON.parse(characterJson.value);
+        const res = await fetch('/character' + profileQuery(), { method: 'PATCH', headers: headers(true), body: JSON.stringify({ character }) });
+        if (!res.ok) throw new Error('character save failed: ' + res.status);
+        const body = await res.json();
+        characterJson.value = JSON.stringify(body.character, null, 2);
+        statusEl.textContent = '角色卡已保存到本机';
+      }
+      async function resetCharacter() {
+        const res = await fetch('/character/reset' + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' });
+        const body = await res.json();
+        characterJson.value = JSON.stringify(body.character, null, 2);
+        statusEl.textContent = '角色卡已恢复默认';
       }
       function renderMemory(m) {
         const div = document.createElement('div');
@@ -144,15 +221,15 @@
         if (!apiKey.value.trim()) { statusEl.textContent = '请先填入 DeepSeek API key，或在 .env.local 设置 DEEPSEEK_API_KEY'; return; }
         input.value = ''; send.disabled = true; append('user', text); const aiBox = append('ai', ''); statusEl.textContent = 'Mika 正在回复…';
         try {
-          const res = await fetch('/chat/stream', { method: 'POST', headers: headers(true, true), body: JSON.stringify({ profile_id: profileId.value.trim() || 'default', session_id: 'local-session', input: { type: 'text', text }, mode: 'girlfriend_chat', client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: avatarEnabled.checked, voice_enabled: false } }) });
+          const res = await fetch('/chat/stream', { method: 'POST', headers: headers(true, true), body: JSON.stringify({ profile_id: profileId.value.trim() || 'default', session_id: sessionId.value.trim() || 'local-session', input: { type: 'text', text }, mode: 'girlfriend_chat', client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: avatarEnabled.checked, voice_enabled: false } }) });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           const reader = res.body.getReader(), decoder = new TextDecoder(); let buffer = '';
           while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); buffer = parseSse(buffer, (name, data) => { if (name === 'text_delta') aiBox.textContent += data.delta; if (name === 'avatar_signal') statusEl.textContent = `emotion=${data.emotion}, action=${data.action}`; if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选'; messages.scrollTop = messages.scrollHeight; }); }
-          statusEl.textContent = '就绪'; await loadMemories();
+          statusEl.textContent = '就绪'; await loadMemories(); await loadSessions();
         } catch (error) { aiBox.textContent = '连接失败：' + error.message; statusEl.textContent = '错误'; }
         finally { send.disabled = false; input.focus(); }
       });
-      loadSettings().catch(() => {}); loadMemories().catch(() => {});
+      loadSettings().catch(() => {}); loadMemories().catch(() => {}); loadCharacter().catch(() => {}); loadSessions().catch(() => {});
     </script>
   </body>
 </html>

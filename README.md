@@ -4,7 +4,7 @@
 
 - 无需注册，clone 后本地运行
 - 用户自带 DeepSeek API key，也可用 `.env.local` 本地配置
-- 聊天、记忆、设置、日志默认保存在本机 SQLite
+- 聊天、记忆、设置、角色卡、日志默认保存在本机
 - 默认不上传遥测，不提供云同步
 - 默认绑定 `127.0.0.1`，不开放局域网访问
 - 高风险工具默认关闭；所有模型调用必须经过本地 Agent Gateway
@@ -41,6 +41,7 @@ npm run smoke:deepseek   # 读取 .env.local 或当前 shell 的 DEEPSEEK_API_KE
 ~/.liukong/
   liukong.db
   local_token
+  characters/default_girlfriend.json
 ```
 
 可用环境变量覆盖：
@@ -79,6 +80,14 @@ DeepSeek API（用户自带 key）
 - `GET /health`
 - `POST /chat` — 需要 `x-liukong-api-key` 或本机 `.env.local` 的 `DEEPSEEK_API_KEY`
 - `POST /chat/stream` — SSE: `text_delta` / `avatar_signal` / `memory_candidate` / `done` / `error`
+- `GET /character?profile_id=default`
+- `PATCH /character?profile_id=default`
+- `POST /character/reset?profile_id=default`
+- `GET /sessions?profile_id=default`
+- `POST /sessions?profile_id=default`
+- `GET /sessions/:id/messages?profile_id=default`
+- `PATCH /sessions/:id?profile_id=default`
+- `DELETE /sessions/:id?profile_id=default` — archive session
 - `GET /settings?profile_id=default`
 - `PATCH /settings?profile_id=default`
 - `GET /memories?profile_id=default`
@@ -95,10 +104,11 @@ DeepSeek API（用户自带 key）
 - AgentGateway：统一 `ChatRequest` / `AgentResponse`、streaming events、request_id、usage/latency/safety 记录
 - PromptAssembler：文件化 system/compliance/output policy、JSON 角色卡、关系状态、用户设置、记忆注入
 - MemoryController：记忆抽取、写入 gate、pending/confirm/reject/edit、检索、删除、敏感信息确认逻辑
-- SQLite 本地持久化：settings、memories、sessions/messages 表、relationship、tool_calls、local_audit_logs view
+- SQLite 本地持久化：settings、memories、sessions/messages、relationship、tool_calls、local_audit_logs view
 - Local token：默认保护 localhost API
+- 本地角色卡：首次启动复制默认角色卡到 `~/.liukong/characters/`，支持查看、编辑、恢复默认
 - 本地导出/清空：JSON export + reset profile data
-- 最小 Web UI：聊天、settings、memory、local export/reset
+- 最小 Web UI：聊天、session 管理、settings、character、memory、local export/reset
 - CI / Docker / security notes
 
 ## 安全原则

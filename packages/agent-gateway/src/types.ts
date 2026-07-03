@@ -175,6 +175,28 @@ export interface StoredMemory extends MemoryCandidate {
   deleted_at?: string;
 }
 
+export interface LocalSession {
+  id: string;
+  user_id: string;
+  title?: string;
+  created_at: string;
+  updated_at: string;
+  status: "active" | "archived";
+  last_message_preview?: string;
+  message_count: number;
+}
+
+export interface LocalChatMessage {
+  id: string;
+  session_id: string;
+  user_id: string;
+  role: "user" | "assistant" | "tool" | "system";
+  content: string;
+  emotion?: string;
+  avatar_action?: string;
+  created_at: string;
+}
+
 export interface SafetyResult {
   level: "normal" | "caution" | "blocked";
   flags: string[];

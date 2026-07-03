@@ -7,6 +7,7 @@ export * from "./gateway/AgentGateway.ts";
 export * from "./gateway/StreamEventMapper.ts";
 export * from "./prompts/PromptAssembler.ts";
 export * from "./character/CharacterEngine.ts";
+export * from "./character/LocalCharacterStore.ts";
 export * from "./memory/MemoryController.ts";
 export * from "./memory/MemoryCandidateExtractor.ts";
 export * from "./memory/MemoryStore.ts";
