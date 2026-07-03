@@ -28,10 +28,12 @@ export class DeepSeekProvider implements LLMProvider {
   async complete(request: LLMCompleteRequest): Promise<LLMResponse> {
     const payload = { ...request, stream: false };
     const json = await this.postJson(payload);
-    const text = json.choices?.[0]?.message?.content ?? "";
+    const message = json.choices?.[0]?.message ?? {};
+    const text = message.content ?? "";
     return {
       text,
       usage: normalizeUsage(json.usage),
+      tool_calls: Array.isArray(message.tool_calls) ? message.tool_calls : undefined,
       raw: json,
     };
   }

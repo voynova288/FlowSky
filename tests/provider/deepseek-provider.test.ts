@@ -11,7 +11,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 test("test_deepseek_nonstream_success", async () => {
   const calls: any[] = [];
   const provider = new DeepSeekProvider({
-    apiKey: "sk-test-secret",
+    apiKey: "test-secret",
     fetchFn: async (_url, init) => {
       calls.push(JSON.parse(String(init?.body)));
       return jsonResponse({ choices: [{ message: { content: "你好" } }], usage: { prompt_tokens: 1, completion_tokens: 2 } });
@@ -33,7 +33,7 @@ test("test_deepseek_stream_success", async () => {
       controller.close();
     },
   });
-  const provider = new DeepSeekProvider({ apiKey: "sk-test-secret", fetchFn: async () => new Response(body, { status: 200 }) });
+  const provider = new DeepSeekProvider({ apiKey: "test-secret", fetchFn: async () => new Response(body, { status: 200 }) });
   let text = "";
   let sawUsage = false;
   for await (const chunk of provider.stream({ model: "deepseek-v4-flash", stream: true, messages: [{ role: "user", content: "hi" }] })) {
@@ -47,7 +47,7 @@ test("test_deepseek_stream_success", async () => {
 test("test_deepseek_json_output_valid", async () => {
   let payload: any;
   const provider = new DeepSeekProvider({
-    apiKey: "sk-test-secret",
+    apiKey: "test-secret",
     fetchFn: async (_url, init) => {
       payload = JSON.parse(String(init?.body));
       return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }], usage: {} });
@@ -62,6 +62,6 @@ test("test_thinking_disabled_for_normal_chat", () => {
 });
 
 test("test_api_key_not_logged", () => {
-  const redacted = sanitizeForLog("bad sk-real-secret-token-1234567890", "sk-real-secret-token-1234567890");
-  assert.equal(redacted.includes("sk-real-secret-token"), false);
+  const redacted = sanitizeForLog("bad liveSecretToken_1234567890", "liveSecretToken_1234567890");
+  assert.equal(redacted.includes("liveSecretToken"), false);
 });

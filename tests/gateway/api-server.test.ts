@@ -60,6 +60,13 @@ test("api settings and memory routes", async () => {
     const settingsBody = await settings.json();
     assert.equal(settingsBody.preferred_name, "主人");
 
+    const badSettings = await fetch(`${baseUrl}/settings?user_id=u1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ romance_realism_level: 99 }),
+    });
+    assert.equal(badSettings.status, 400);
+
     await fetch(`${baseUrl}/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -70,6 +77,13 @@ test("api settings and memory routes", async () => {
     assert.equal(body.memories.length, 1);
 
     const id = body.memories[0].id;
+    const badMemory = await fetch(`${baseUrl}/memories/${id}?user_id=u1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ memory_type: "script" }),
+    });
+    assert.equal(badMemory.status, 400);
+
     const deleted = await fetch(`${baseUrl}/memories/${id}?user_id=u1`, { method: "DELETE" });
     assert.deepEqual(await deleted.json(), { deleted: true });
   });

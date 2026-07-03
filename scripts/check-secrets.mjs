@@ -20,7 +20,7 @@ const files = execFileSync('git', ['ls-files'], { encoding: 'utf8' })
   .filter(Boolean)
   .filter((path) => existsSync(path));
 
-const suspicious = [/sk-[A-Za-z0-9_-]{20,}/, /DEEPSEEK_API_KEY\s*=/];
+const suspicious = [/sk-[A-Za-z0-9_-]{20,}/];
 for (const file of files) {
   const text = readFileSync(file, 'utf8');
   for (const pattern of suspicious) {

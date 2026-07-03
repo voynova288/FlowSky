@@ -1,0 +1,13 @@
+.git
+node_modules
+.flowsky
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+API.txt
+coverage
+dist
+*.log

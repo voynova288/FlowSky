@@ -46,9 +46,30 @@ export interface Usage {
   total_tokens?: number;
 }
 
+export interface LLMToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface LLMToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
 export interface LLMMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  tool_call_id?: string;
+  tool_calls?: LLMToolCall[];
+  name?: string;
 }
 
 export interface LLMCompleteRequest {
@@ -59,6 +80,8 @@ export interface LLMCompleteRequest {
   thinking?: { type: "enabled" | "disabled" };
   reasoning_effort?: "low" | "medium" | "high";
   response_format?: { type: "json_object" };
+  tools?: LLMToolDefinition[];
+  tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
 }
 
 export interface LLMStreamRequest extends Omit<LLMCompleteRequest, "stream"> {
@@ -68,6 +91,7 @@ export interface LLMStreamRequest extends Omit<LLMCompleteRequest, "stream"> {
 export interface LLMResponse {
   text: string;
   usage: Usage;
+  tool_calls?: LLMToolCall[];
   raw?: unknown;
 }
 

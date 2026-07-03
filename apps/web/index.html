@@ -6,109 +6,140 @@
     <title>FlowSky / 流空</title>
     <style>
       :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #27324f, #090b13 55%); color: #eef2ff; display: grid; place-items: center; }
-      main { width: min(860px, calc(100vw - 32px)); height: min(760px, calc(100vh - 32px)); display: grid; grid-template-rows: auto 1fr auto; gap: 14px; }
-      header { display: flex; justify-content: space-between; align-items: end; }
-      h1 { margin: 0; font-size: 26px; letter-spacing: 0.03em; }
-      .status { color: #a7b3d7; font-size: 13px; }
-      #messages { overflow: auto; padding: 18px; border: 1px solid rgba(255,255,255,.14); border-radius: 20px; background: rgba(8, 12, 24, .62); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+      body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #27324f, #090b13 55%); color: #eef2ff; }
+      main { width: min(1180px, calc(100vw - 28px)); height: min(820px, calc(100vh - 28px)); margin: 14px auto; display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 14px; }
+      .chat, aside { border: 1px solid rgba(255,255,255,.14); border-radius: 22px; background: rgba(8, 12, 24, .62); box-shadow: 0 24px 80px rgba(0,0,0,.35); overflow: hidden; }
+      .chat { display: grid; grid-template-rows: auto 1fr auto; }
+      header, aside header { padding: 16px 18px; border-bottom: 1px solid rgba(255,255,255,.1); }
+      h1 { margin: 0; font-size: 25px; letter-spacing: .03em; }
+      h2 { margin: 0 0 10px; font-size: 15px; }
+      .status, label, .meta { color: #a7b3d7; font-size: 12px; }
+      #messages { overflow: auto; padding: 18px; }
       .msg { max-width: 78%; margin: 10px 0; padding: 12px 14px; border-radius: 16px; white-space: pre-wrap; line-height: 1.55; }
       .user { margin-left: auto; background: #4f46e5; }
       .ai { margin-right: auto; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.08); }
-      form { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
-      textarea { resize: none; min-height: 54px; border-radius: 16px; border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.28); color: #fff; padding: 13px 14px; font: inherit; outline: none; }
-      button { border: 0; border-radius: 16px; padding: 0 22px; background: #f0b6ff; color: #1c1024; font-weight: 700; cursor: pointer; }
+      form.chat-form { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 14px; border-top: 1px solid rgba(255,255,255,.1); }
+      textarea, input, select { width: 100%; box-sizing: border-box; border-radius: 12px; border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.28); color: #fff; padding: 10px 11px; font: inherit; outline: none; }
+      textarea { resize: none; min-height: 56px; }
+      button { border: 0; border-radius: 12px; padding: 10px 13px; background: #f0b6ff; color: #1c1024; font-weight: 700; cursor: pointer; }
+      button.secondary { background: rgba(255,255,255,.13); color: #eef2ff; }
+      button.danger { background: #ff9aa2; color: #2a0509; }
       button:disabled { opacity: .55; cursor: wait; }
-      .meta { color: #9aa7cb; font-size: 12px; margin-top: 4px; }
+      aside { overflow: auto; padding-bottom: 12px; }
+      .panel { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.1); }
+      .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin: 8px 0; }
+      .row.stack { grid-template-columns: 1fr; }
+      .memory { padding: 10px; border-radius: 12px; background: rgba(255,255,255,.08); margin: 9px 0; }
+      .memory.pending { outline: 1px solid #f0b6ff; }
+      .memory-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 8px; }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } .chat { min-height: 70vh; } }
     </style>
   </head>
   <body>
     <main>
-      <header>
-        <div>
+      <section class="chat">
+        <header>
           <h1>FlowSky / 流空</h1>
           <div class="status" id="status">本地 MVP · DeepSeek streaming · Memory/Safety gates</div>
-        </div>
-        <div class="status">user_id: demo-user</div>
-      </header>
-      <section id="messages" aria-live="polite"></section>
-      <form id="chatForm">
-        <textarea id="input" placeholder="说点什么，比如：今天有点累" required></textarea>
-        <button id="send" type="submit">发送</button>
-      </form>
+        </header>
+        <section id="messages" aria-live="polite"></section>
+        <form class="chat-form" id="chatForm">
+          <textarea id="input" placeholder="说点什么，比如：今天有点累" required></textarea>
+          <button id="send" type="submit">发送</button>
+        </form>
+      </section>
+      <aside>
+        <header><h2>控制台</h2><div class="meta">AI 非真人；长期记忆可关闭、查看、删除。</div></header>
+        <section class="panel">
+          <h2>连接</h2>
+          <div class="row stack"><label>user_id（无 auth 时使用）</label><input id="userId" value="demo-user" /></div>
+          <div class="row stack"><label>Bearer token（可选）</label><input id="authToken" type="password" placeholder="FLOWSKY_API_AUTH_TOKEN 或 JWT" /></div>
+          <button class="secondary" id="saveClient" type="button">保存本地设置</button>
+        </section>
+        <section class="panel">
+          <h2>用户设置</h2>
+          <div class="row"><label>长期记忆</label><input id="memoryEnabled" type="checkbox" /></div>
+          <div class="row"><label>恋爱真实感</label><select id="romanceLevel"><option value="0">0</option><option value="1">1</option><option value="2">2</option></select></div>
+          <div class="row"><label>Avatar</label><input id="avatarEnabled" type="checkbox" /></div>
+          <button class="secondary" id="loadSettings" type="button">读取</button>
+          <button id="saveSettings" type="button">保存</button>
+        </section>
+        <section class="panel">
+          <h2>记忆</h2>
+          <button class="secondary" id="refreshMemories" type="button">刷新记忆</button>
+          <div id="memories"></div>
+        </section>
+      </aside>
     </main>
     <script>
-      const messages = document.querySelector('#messages');
-      const form = document.querySelector('#chatForm');
-      const input = document.querySelector('#input');
-      const send = document.querySelector('#send');
-      const statusEl = document.querySelector('#status');
+      const $ = (id) => document.querySelector(id);
+      const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
+      const userId = $('#userId'), authToken = $('#authToken'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), memoriesEl = $('#memories');
+      userId.value = localStorage.getItem('flowsky.user_id') || 'demo-user';
+      authToken.value = sessionStorage.getItem('flowsky.auth_token') || '';
 
-      function append(role, text = '') {
-        const box = document.createElement('div');
-        box.className = `msg ${role}`;
-        box.textContent = text;
-        messages.appendChild(box);
-        messages.scrollTop = messages.scrollHeight;
-        return box;
+      function headers(json = false) {
+        const h = json ? { 'content-type': 'application/json' } : {};
+        if (authToken.value.trim()) h.authorization = 'Bearer ' + authToken.value.trim();
+        h['x-flowsky-user-id'] = userId.value.trim() || 'demo-user';
+        return h;
       }
+      function userQuery() { return '?user_id=' + encodeURIComponent(userId.value.trim() || 'demo-user'); }
+      function append(role, text = '') { const box = document.createElement('div'); box.className = `msg ${role}`; box.textContent = text; messages.appendChild(box); messages.scrollTop = messages.scrollHeight; return box; }
+      function parseSse(buffer, onEvent) { const parts = buffer.split('\n\n'); const rest = parts.pop() || ''; for (const part of parts) { const event = part.split('\n').find(l => l.startsWith('event:'))?.slice(6).trim(); const data = part.split('\n').find(l => l.startsWith('data:'))?.slice(5).trim(); if (event && data) onEvent(event, JSON.parse(data)); } return rest; }
 
-      function parseSse(buffer, onEvent) {
-        const parts = buffer.split('\n\n');
-        const rest = parts.pop() ?? '';
-        for (const part of parts) {
-          const lines = part.split('\n');
-          const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim();
-          const data = lines.find((line) => line.startsWith('data:'))?.slice(5).trim();
-          if (event && data) onEvent(event, JSON.parse(data));
-        }
-        return rest;
+      $('#saveClient').onclick = () => { localStorage.setItem('flowsky.user_id', userId.value.trim()); sessionStorage.setItem('flowsky.auth_token', authToken.value.trim()); statusEl.textContent = '本地连接设置已保存（token 仅保存到当前浏览器会话）'; };
+      $('#loadSettings').onclick = loadSettings;
+      $('#saveSettings').onclick = saveSettings;
+      $('#refreshMemories').onclick = loadMemories;
+
+      async function loadSettings() {
+        const res = await fetch('/settings' + userQuery(), { headers: headers() });
+        if (!res.ok) throw new Error('settings load failed: ' + res.status);
+        const s = await res.json();
+        memoryEnabled.checked = !!s.memory_enabled;
+        romanceLevel.value = String(s.romance_realism_level ?? 1);
+        avatarEnabled.checked = !!s.avatar_enabled;
       }
+      async function saveSettings() {
+        await fetch('/settings' + userQuery(), { method: 'PATCH', headers: headers(true), body: JSON.stringify({ memory_enabled: memoryEnabled.checked, romance_realism_level: Number(romanceLevel.value), avatar_enabled: avatarEnabled.checked }) });
+        statusEl.textContent = '设置已保存';
+      }
+      async function loadMemories() {
+        const res = await fetch('/memories' + userQuery(), { headers: headers() });
+        const body = await res.json();
+        memoriesEl.innerHTML = '';
+        for (const m of body.memories || []) renderMemory(m);
+      }
+      function renderMemory(m) {
+        const div = document.createElement('div');
+        const pending = !m.user_confirmed || m.needs_user_confirmation || !m.should_store;
+        div.className = 'memory' + (pending ? ' pending' : '');
+        const content = document.createElement('div'); content.textContent = String(m.content || '');
+        const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${String(m.memory_type || 'memory')} · ${String(m.sensitivity || 'low')}${pending ? ' · 待确认' : ''}`;
+        const actions = document.createElement('div'); actions.className = 'memory-actions';
+        if (pending) actions.append(button('确认', () => confirmMemory(m.id)), button('拒绝', () => rejectMemory(m.id, true)));
+        actions.append(button('删除', () => rejectMemory(m.id, false), 'danger'));
+        div.append(content, meta, actions); memoriesEl.append(div);
+      }
+      function button(text, onclick, cls = 'secondary') { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = text; b.onclick = onclick; return b; }
+      async function confirmMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/confirm` + userQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
+      async function rejectMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/reject` + userQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
 
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        const text = input.value.trim();
-        if (!text) return;
-        input.value = '';
-        send.disabled = true;
-        append('user', text);
-        const aiBox = append('ai', '');
-        statusEl.textContent = 'Mika 正在回复…';
+        const text = input.value.trim(); if (!text) return;
+        input.value = ''; send.disabled = true; append('user', text); const aiBox = append('ai', ''); statusEl.textContent = 'Mika 正在回复…';
         try {
-          const res = await fetch('/chat/stream', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              user_id: 'demo-user',
-              session_id: 'demo-session',
-              input: { type: 'text', text },
-              mode: 'girlfriend_chat',
-              client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: true, voice_enabled: false },
-            }),
-          });
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            buffer = parseSse(buffer, (name, data) => {
-              if (name === 'text_delta') aiBox.textContent += data.delta;
-              if (name === 'avatar_signal') statusEl.textContent = `emotion=${data.emotion}, action=${data.action}`;
-              if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选';
-              messages.scrollTop = messages.scrollHeight;
-            });
-          }
-          statusEl.textContent = '就绪';
-        } catch (error) {
-          aiBox.textContent = '连接失败：' + error.message;
-          statusEl.textContent = '错误';
-        } finally {
-          send.disabled = false;
-          input.focus();
-        }
+          const res = await fetch('/chat/stream', { method: 'POST', headers: headers(true), body: JSON.stringify({ user_id: userId.value.trim() || 'demo-user', session_id: 'demo-session', input: { type: 'text', text }, mode: 'girlfriend_chat', client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: avatarEnabled.checked, voice_enabled: false } }) });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const reader = res.body.getReader(), decoder = new TextDecoder(); let buffer = '';
+          while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); buffer = parseSse(buffer, (name, data) => { if (name === 'text_delta') aiBox.textContent += data.delta; if (name === 'avatar_signal') statusEl.textContent = `emotion=${data.emotion}, action=${data.action}`; if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选'; messages.scrollTop = messages.scrollHeight; }); }
+          statusEl.textContent = '就绪'; await loadMemories();
+        } catch (error) { aiBox.textContent = '连接失败：' + error.message; statusEl.textContent = '错误'; }
+        finally { send.disabled = false; input.focus(); }
       });
+      loadSettings().catch(() => {}); loadMemories().catch(() => {});
     </script>
   </body>
 </html>

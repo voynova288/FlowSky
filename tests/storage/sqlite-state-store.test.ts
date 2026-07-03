@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { SqliteStateStore, SqliteRequestLogger } from "../../packages/agent-gateway/src/index.ts";
 
 function withTempDb<T>(fn: (dbPath: string) => T): T {
@@ -13,6 +14,19 @@ function withTempDb<T>(fn: (dbPath: string) => T): T {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test("sqlite migrations create expected schema versions", () => {
+  withTempDb((dbPath) => {
+    const store = new SqliteStateStore(dbPath);
+    store.close();
+    const db = new DatabaseSync(dbPath);
+    const rows = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: number }>;
+    assert.deepEqual(rows.map((row) => row.version), [1, 2]);
+    const toolCalls = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'").get();
+    assert.ok(toolCalls);
+    db.close();
+  });
+});
 
 test("sqlite settings and memories persist across store instances", () => {
   withTempDb((dbPath) => {
@@ -32,6 +46,9 @@ test("sqlite settings and memories persist across store instances", () => {
     const second = new SqliteStateStore(dbPath);
     assert.equal(second.get("u1").preferred_name, "小空");
     assert.equal(second.retrieve("u1", "短句").length, 1);
+    const updated = second.updateMemory("u1", saved.id, { content: "用户喜欢更短句回复" });
+    assert.equal(updated?.content, "用户喜欢更短句回复");
+    assert.equal(second.get("u1").preferred_name, "小空");
     assert.equal(second.delete("u1", saved.id), true);
     assert.equal(second.retrieve("u1", "短句").length, 0);
     second.close();

@@ -7,6 +7,103 @@ import type { MemoryStoreLike } from "../memory/MemoryStore.ts";
 import { DEFAULT_USER_SETTINGS, type SettingsStoreLike } from "../tools/tools/settings_tools.ts";
 import type { RequestLogEntry } from "../observability/RequestLogger.ts";
 
+const MIGRATIONS = [
+  {
+    version: 1,
+    name: "core_settings_memories_audit",
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_settings (
+        user_id TEXT PRIMARY KEY,
+        settings_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS memories (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        memory_type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        sensitivity TEXT NOT NULL,
+        source_message_id TEXT NOT NULL,
+        user_confirmed INTEGER NOT NULL,
+        should_store INTEGER NOT NULL,
+        needs_user_confirmation INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_memories_user_active ON memories(user_id, deleted_at, created_at);
+
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        thinking_type TEXT,
+        prompt_hash TEXT,
+        retrieved_memory_ids_json TEXT NOT NULL,
+        tool_calls_json TEXT NOT NULL,
+        first_token_latency INTEGER,
+        total_latency INTEGER NOT NULL,
+        usage_json TEXT NOT NULL,
+        safety_flags_json TEXT NOT NULL,
+        error_code TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_request ON audit_logs(request_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created ON audit_logs(user_id, created_at);
+    `,
+  },
+  {
+    version: 2,
+    name: "sessions_relationships_tool_calls",
+    sql: `
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active'
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_user_updated ON sessions(user_id, updated_at);
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        emotion TEXT,
+        avatar_action TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS relationship_states (
+        user_id TEXT PRIMARY KEY,
+        stage TEXT NOT NULL,
+        intimacy_level INTEGER NOT NULL,
+        trust_level INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        arguments_json TEXT NOT NULL,
+        allowed INTEGER NOT NULL,
+        result_summary TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_tool_calls_request ON tool_calls(request_id);
+    `,
+  },
+] as const;
+
 export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
   private readonly db: DatabaseSync;
 
@@ -68,7 +165,9 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
       .map((w) => w.trim())
       .filter(Boolean)
       .slice(0, 8);
-    const all = this.list(userId);
+    const all = this.list(userId).filter(
+      (memory) => memory.should_store && memory.user_confirmed && !memory.needs_user_confirmation,
+    );
     if (words.length === 0) return all.slice(0, limit);
     return all
       .map((memory) => ({
@@ -87,6 +186,48 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
       .prepare("UPDATE memories SET deleted_at = ?, updated_at = ? WHERE user_id = ? AND id = ? AND deleted_at IS NULL")
       .run(now, now, userId, memoryId);
     return Number(result.changes ?? 0) > 0;
+  }
+
+  confirm(
+    userId: string,
+    memoryId: string,
+    patch: Partial<Pick<StoredMemory, "content" | "memory_type">> = {},
+  ): StoredMemory | null {
+    const existing = this.db
+      .prepare("SELECT * FROM memories WHERE user_id = ? AND id = ? AND deleted_at IS NULL")
+      .get(userId, memoryId) as any | undefined;
+    if (!existing) return null;
+    const now = nowIso();
+    const content = patch.content ?? existing.content;
+    const memoryType = patch.memory_type ?? existing.memory_type;
+    this.db
+      .prepare(`UPDATE memories SET content = ?, memory_type = ?, should_store = 1,
+        user_confirmed = 1, needs_user_confirmation = 0, updated_at = ?
+        WHERE user_id = ? AND id = ? AND deleted_at IS NULL`)
+      .run(content, memoryType, now, userId, memoryId);
+    return rowToMemory({ ...existing, content, memory_type: memoryType, should_store: 1, user_confirmed: 1, needs_user_confirmation: 0, updated_at: now });
+  }
+
+  reject(userId: string, memoryId: string): boolean {
+    return this.delete(userId, memoryId);
+  }
+
+  updateMemory(
+    userId: string,
+    memoryId: string,
+    patch: Partial<Pick<StoredMemory, "content" | "memory_type">>,
+  ): StoredMemory | null {
+    const existing = this.db
+      .prepare("SELECT * FROM memories WHERE user_id = ? AND id = ? AND deleted_at IS NULL")
+      .get(userId, memoryId) as any | undefined;
+    if (!existing) return null;
+    const now = nowIso();
+    const content = patch.content ?? existing.content;
+    const memoryType = patch.memory_type ?? existing.memory_type;
+    this.db
+      .prepare("UPDATE memories SET content = ?, memory_type = ?, updated_at = ? WHERE user_id = ? AND id = ? AND deleted_at IS NULL")
+      .run(content, memoryType, now, userId, memoryId);
+    return rowToMemory({ ...existing, content, memory_type: memoryType, updated_at: now });
   }
 
   get(userId: string): UserSettings {
@@ -138,50 +279,31 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
   }
 
   private init(): void {
+    this.db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS user_settings (
-        user_id TEXT PRIMARY KEY,
-        settings_json TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL
       );
-
-      CREATE TABLE IF NOT EXISTS memories (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        memory_type TEXT NOT NULL,
-        content TEXT NOT NULL,
-        confidence REAL NOT NULL,
-        sensitivity TEXT NOT NULL,
-        source_message_id TEXT NOT NULL,
-        user_confirmed INTEGER NOT NULL,
-        should_store INTEGER NOT NULL,
-        needs_user_confirmation INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        deleted_at TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_memories_user_active ON memories(user_id, deleted_at, created_at);
-
-      CREATE TABLE IF NOT EXISTS audit_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        request_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        model TEXT NOT NULL,
-        thinking_type TEXT,
-        prompt_hash TEXT,
-        retrieved_memory_ids_json TEXT NOT NULL,
-        tool_calls_json TEXT NOT NULL,
-        first_token_latency INTEGER,
-        total_latency INTEGER NOT NULL,
-        usage_json TEXT NOT NULL,
-        safety_flags_json TEXT NOT NULL,
-        error_code TEXT,
-        created_at TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_audit_logs_request ON audit_logs(request_id);
-      CREATE INDEX IF NOT EXISTS idx_audit_logs_user_created ON audit_logs(user_id, created_at);
     `);
+    for (const migration of MIGRATIONS) {
+      const row = this.db
+        .prepare("SELECT version FROM schema_migrations WHERE version = ?")
+        .get(migration.version) as { version: number } | undefined;
+      if (row) continue;
+      this.db.exec("BEGIN");
+      try {
+        this.db.exec(migration.sql);
+        this.db
+          .prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
+          .run(migration.version, migration.name, nowIso());
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
   }
 }
 

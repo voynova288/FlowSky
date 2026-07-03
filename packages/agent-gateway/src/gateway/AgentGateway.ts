@@ -9,8 +9,8 @@ import { InputSafetyGate } from "../safety/InputSafetyGate.ts";
 import { OutputSafetyGate } from "../safety/OutputSafetyGate.ts";
 import { RomanceRealismGate } from "../safety/RomanceRealismGate.ts";
 import { ToolRouter } from "../tools/ToolRouter.ts";
-import type { AgentResponse, ChatRequest, RelationshipState, StoredMemory, StreamEvent, Usage, UserSettings } from "../types.ts";
-import { approxUsageFromMessages, randomId } from "../util.ts";
+import type { AgentResponse, ChatRequest, LLMMessage, LLMToolCall, RelationshipState, StoredMemory, StreamEvent, ToolCallRecord, Usage, UserSettings } from "../types.ts";
+import { approxUsageFromMessages, nowIso, randomId } from "../util.ts";
 import { inferAvatarSignal, StreamEventMapper } from "./StreamEventMapper.ts";
 
 export interface AgentGatewayOptions {
@@ -61,7 +61,32 @@ export class AgentGateway {
       current_user_input: request.input.text,
     });
     const modelConfig = modelConfigForMode(mode);
-    const llm = await this.options.provider.complete({ ...modelConfig, messages });
+    const toolRecords: ToolCallRecord[] = [];
+    let llm = await this.options.provider.complete({
+      ...modelConfig,
+      messages,
+      tools: this.toolRouter.definitions(),
+      tool_choice: "auto",
+    });
+    if (llm.tool_calls?.length) {
+      const toolMessages = await this.executeToolCalls({
+        calls: llm.tool_calls,
+        requestId,
+        userId: request.user_id,
+      });
+      toolRecords.push(...toolMessages.records);
+      const followUpMessages: LLMMessage[] = [
+        ...messages,
+        { role: "assistant", content: llm.text ?? "", tool_calls: llm.tool_calls },
+        ...toolMessages.messages,
+      ];
+      llm = await this.options.provider.complete({
+        ...modelConfig,
+        messages: followUpMessages,
+        tool_choice: "none",
+      });
+    }
+
     let text = llm.text || "我在呢。你慢慢说，我听着。";
     const romance = this.romanceGate.check(text, settings);
     const output = this.outputSafety.check(text);
@@ -84,7 +109,7 @@ export class AgentGateway {
       thinking_type: modelConfig.thinking?.type,
       prompt_hash: promptHash(messages),
       retrieved_memory_ids: memories.map((m) => m.id),
-      tool_calls: [],
+      tool_calls: toolRecords.map((record) => record.id),
       total_latency: latency,
       usage: llm.usage,
       safety_flags: finalSafety.flags,
@@ -97,7 +122,7 @@ export class AgentGateway {
       emotion: avatar.emotion,
       avatar_action: avatar.action,
       memory_candidates: memoryCandidates,
-      tool_calls: [],
+      tool_calls: toolRecords,
       safety: finalSafety,
       usage: llm.usage,
       latency_ms: latency,
@@ -110,6 +135,26 @@ export class AgentGateway {
 
   deleteMemory(userId: string, memoryId: string): boolean {
     return this.memoryController.delete(userId, memoryId);
+  }
+
+  confirmMemory(
+    userId: string,
+    memoryId: string,
+    patch: Partial<Pick<StoredMemory, "content" | "memory_type">> = {},
+  ): StoredMemory | null {
+    return this.memoryController.confirm(userId, memoryId, patch);
+  }
+
+  rejectMemory(userId: string, memoryId: string): boolean {
+    return this.memoryController.reject(userId, memoryId);
+  }
+
+  updateMemory(
+    userId: string,
+    memoryId: string,
+    patch: Partial<Pick<StoredMemory, "content" | "memory_type">>,
+  ): StoredMemory | null {
+    return this.memoryController.updateMemory(userId, memoryId, patch);
   }
 
   getUserSettings(userId: string): UserSettings {
@@ -129,6 +174,16 @@ export class AgentGateway {
     const requestId = request.request_id ?? randomId("req");
     const messageId = randomId("msg");
     const settings = this.toolRouter.settingsStore.get(request.user_id);
+    const inputSafety = this.inputSafety.check(request.input.text);
+    if (inputSafety.level === "blocked") {
+      const usage: Usage = { prompt_tokens: 0, completion_tokens: 0 };
+      const text = "我先陪你稳住一下。如果你有伤害自己的冲动，请马上联系身边可信的人或当地紧急服务。";
+      yield { event: "avatar_signal", data: inferAvatarSignal(text) };
+      yield { event: "text_delta", data: { delta: text } };
+      yield this.streamMapper.done(messageId, usage, tracker.totalLatencyMs(), tracker.firstTokenLatencyMs());
+      return;
+    }
+
     const memories = settings.memory_enabled ? this.memoryController.retrieve(request.user_id, request.input.text) : [];
     const messages = this.promptAssembler.assemble({
       relationship_state: defaultRelationship(),
@@ -140,19 +195,28 @@ export class AgentGateway {
     const modelConfig = modelConfigForMode(request.mode ?? "girlfriend_chat");
     let fullText = "";
     let usage: Usage = { prompt_tokens: 0, completion_tokens: 0 };
-    yield { event: "avatar_signal", data: { emotion: "warm", action: "soft_smile" } };
     try {
+      // Buffer provider tokens until output/romance gates pass. This trades a
+      // little latency for preventing unsafe text from being streamed and then
+      // retracted.
       for await (const chunk of this.options.provider.stream({ ...modelConfig, messages, stream: true })) {
         if (chunk.delta) {
           tracker.markFirstToken();
           fullText += chunk.delta;
-          const event = this.streamMapper.mapTextDelta(chunk);
-          if (event) yield event;
         }
         if (chunk.usage) usage = chunk.usage;
       }
       if (usage.prompt_tokens === 0 && usage.completion_tokens === 0) {
         usage = approxUsageFromMessages(JSON.stringify(messages), fullText);
+      }
+      let finalText = fullText || "我在呢。你慢慢说，我听着。";
+      const romance = this.romanceGate.check(finalText, settings);
+      const output = this.outputSafety.check(finalText);
+      const finalSafety = mergeSafety(inputSafety, romance, output);
+      if (finalSafety.rewrite_required && finalSafety.rewritten_text) finalText = finalSafety.rewritten_text;
+      yield { event: "avatar_signal", data: inferAvatarSignal(finalText) };
+      for (const delta of splitForStreaming(finalText)) {
+        yield { event: "text_delta", data: { delta } };
       }
       const candidates = await this.memoryController.processUserMessage({
         userId: request.user_id,
@@ -173,12 +237,59 @@ export class AgentGateway {
         first_token_latency: tracker.firstTokenLatencyMs(),
         total_latency: tracker.totalLatencyMs(),
         usage,
-        safety_flags: [],
+        safety_flags: finalSafety.flags,
       });
       yield this.streamMapper.done(messageId, usage, tracker.totalLatencyMs(), tracker.firstTokenLatencyMs());
     } catch (error) {
-      yield { event: "error", data: { code: "stream_failed", message: error instanceof Error ? error.message : String(error) } };
+      yield { event: "error", data: { code: "stream_failed", message: "stream failed" } };
     }
+  }
+
+  private async executeToolCalls(params: {
+    calls: LLMToolCall[];
+    requestId: string;
+    userId: string;
+  }): Promise<{ records: ToolCallRecord[]; messages: LLMMessage[] }> {
+    const records: ToolCallRecord[] = [];
+    const messages: LLMMessage[] = [];
+    for (const call of params.calls) {
+      const toolName = call.function?.name || "unknown_tool";
+      try {
+        const args = parseToolArguments(call.function?.arguments ?? "{}");
+        const { record, result } = await this.toolRouter.execute({
+          request_id: params.requestId,
+          user_id: params.userId,
+          tool_name: toolName,
+          arguments_json: args,
+        });
+        records.push(record);
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          name: toolName,
+          content: JSON.stringify({ allowed: record.allowed, result: result ?? record.result_summary }),
+        });
+      } catch (error) {
+        const record: ToolCallRecord = {
+          id: randomId("tool"),
+          request_id: params.requestId,
+          user_id: params.userId,
+          tool_name: toolName,
+          arguments_json: {},
+          allowed: false,
+          result_summary: `tool_failed: ${safeToolError(error)}`,
+          created_at: nowIso(),
+        };
+        records.push(record);
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          name: toolName,
+          content: JSON.stringify({ allowed: false, error: "tool_failed" }),
+        });
+      }
+    }
+    return { records, messages };
   }
 
   private blockedResponse(requestId: string, messageId: string, text: string, safety: AgentResponse["safety"], latency: number): AgentResponse {
@@ -200,6 +311,29 @@ export class AgentGateway {
 
 function defaultRelationship(): RelationshipState {
   return { stage: "friendly_romantic", intimacy_level: 2, trust_level: 2 };
+}
+
+function splitForStreaming(text: string, chunkSize = 12): string[] {
+  const chars = Array.from(text);
+  const chunks: string[] = [];
+  for (let i = 0; i < chars.length; i += chunkSize) {
+    chunks.push(chars.slice(i, i + chunkSize).join(""));
+  }
+  return chunks.length > 0 ? chunks : [""];
+}
+
+function parseToolArguments(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {};
+  const parsed = JSON.parse(raw) as unknown;
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new Error("tool arguments must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function safeToolError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/[\r\n]+/g, " ").slice(0, 120);
 }
 
 function mergeSafety(...items: AgentResponse["safety"][]): AgentResponse["safety"] {

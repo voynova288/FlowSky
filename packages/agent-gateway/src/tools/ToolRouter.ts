@@ -1,5 +1,5 @@
 import { ToolPermissionGate } from "../safety/ToolPermissionGate.ts";
-import type { ToolCallRecord } from "../types.ts";
+import type { LLMToolDefinition, ToolCallRecord, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import { get_current_time } from "./tools/get_current_time.ts";
 import { set_timer } from "./tools/set_timer.ts";
@@ -16,6 +16,78 @@ export class ToolRouter {
   ) {
     this.permissionGate = permissionGate;
     this.settingsStore = settingsStore;
+  }
+
+  definitions(): LLMToolDefinition[] {
+    return [
+      {
+        type: "function",
+        function: {
+          name: "get_current_time",
+          description: "Get the current date/time for the user's timezone.",
+          parameters: {
+            type: "object",
+            properties: { timezone: { type: "string" } },
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "set_timer",
+          description: "Set a low-risk local reminder timer.",
+          parameters: {
+            type: "object",
+            properties: { seconds: { type: "number" }, label: { type: "string" } },
+            required: ["seconds"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "summarize_session",
+          description: "Summarize recent session messages supplied by the gateway.",
+          parameters: {
+            type: "object",
+            properties: { messages: { type: "array", items: { type: "object" } } },
+            required: ["messages"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "get_user_settings",
+          description: "Read the current user's FlowSky settings.",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "update_user_settings",
+          description: "Update low-risk FlowSky settings for the current user.",
+          parameters: {
+            type: "object",
+            properties: {
+              memory_enabled: { type: "boolean" },
+              proactive_enabled: { type: "boolean" },
+              romance_realism_level: { type: "number" },
+              voice_enabled: { type: "boolean" },
+              avatar_enabled: { type: "boolean" },
+              preferred_name: { type: "string" },
+              quiet_hours: { type: "array", items: { type: "string" } },
+              adult_romance_enabled: { type: "boolean" },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+    ].filter((definition) => this.permissionGate.isAllowed(definition.function.name));
   }
 
   async execute(params: {
@@ -55,9 +127,28 @@ export class ToolRouter {
       case "get_user_settings":
         return get_user_settings({ user_id: userId }, this.settingsStore);
       case "update_user_settings":
-        return update_user_settings({ user_id: userId, patch: args as any }, this.settingsStore);
+        return update_user_settings({ user_id: userId, patch: sanitizeSettingsToolPatch(args) }, this.settingsStore);
       default:
         throw new Error(`Unsupported tool: ${toolName}`);
     }
   }
+}
+
+function sanitizeSettingsToolPatch(args: Record<string, unknown>): Partial<UserSettings> {
+  const patch: Partial<UserSettings> = {};
+  if (typeof args.memory_enabled === "boolean") patch.memory_enabled = args.memory_enabled;
+  if (typeof args.proactive_enabled === "boolean") patch.proactive_enabled = args.proactive_enabled;
+  if (typeof args.voice_enabled === "boolean") patch.voice_enabled = args.voice_enabled;
+  if (typeof args.avatar_enabled === "boolean") patch.avatar_enabled = args.avatar_enabled;
+  if (typeof args.adult_romance_enabled === "boolean") patch.adult_romance_enabled = args.adult_romance_enabled;
+  if (typeof args.romance_realism_level === "number" && Number.isFinite(args.romance_realism_level)) {
+    patch.romance_realism_level = Math.min(2, Math.max(0, args.romance_realism_level));
+  }
+  if (typeof args.preferred_name === "string" && args.preferred_name.length <= 80) {
+    patch.preferred_name = args.preferred_name.trim() || undefined;
+  }
+  if (Array.isArray(args.quiet_hours) && args.quiet_hours.every((value) => typeof value === "string" && value.length <= 20)) {
+    patch.quiet_hours = args.quiet_hours;
+  }
+  return patch;
 }

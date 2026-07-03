@@ -26,6 +26,8 @@ export class MemoryController {
     for (const candidate of gated) {
       if (candidate.should_store && !candidate.needs_user_confirmation) {
         this.store.save(params.userId, candidate, true);
+      } else if (candidate.needs_user_confirmation) {
+        this.store.save(params.userId, candidate, false);
       }
     }
     return gated;
@@ -41,5 +43,25 @@ export class MemoryController {
 
   delete(userId: string, memoryId: string): boolean {
     return this.store.delete(userId, memoryId);
+  }
+
+  confirm(
+    userId: string,
+    memoryId: string,
+    patch: Partial<Pick<StoredMemory, "content" | "memory_type">> = {},
+  ): StoredMemory | null {
+    return this.store.confirm?.(userId, memoryId, patch) ?? null;
+  }
+
+  reject(userId: string, memoryId: string): boolean {
+    return this.store.reject?.(userId, memoryId) ?? this.store.delete(userId, memoryId);
+  }
+
+  updateMemory(
+    userId: string,
+    memoryId: string,
+    patch: Partial<Pick<StoredMemory, "content" | "memory_type">>,
+  ): StoredMemory | null {
+    return this.store.updateMemory?.(userId, memoryId, patch) ?? null;
   }
 }

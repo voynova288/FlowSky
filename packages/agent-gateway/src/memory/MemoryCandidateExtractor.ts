@@ -31,6 +31,19 @@ export class MemoryCandidateExtractor {
 function heuristicExtract(userMessage: string, sourceMessageId: string): MemoryCandidate[] {
   const text = userMessage.trim();
   const candidates: MemoryCandidate[] = [];
+  if (/身份证|地址|手机号|健康|心理|家人|学校|公司|位置/.test(text)) {
+    return [
+      {
+        should_store: false,
+        memory_type: "sensitive_memory",
+        content: text,
+        confidence: 0.75,
+        sensitivity: "high",
+        needs_user_confirmation: true,
+        source_message_id: sourceMessageId,
+      },
+    ];
+  }
   if (/记住|以后|我喜欢|我希望|偏好|叫我/.test(text)) {
     candidates.push({
       should_store: true,
@@ -39,17 +52,6 @@ function heuristicExtract(userMessage: string, sourceMessageId: string): MemoryC
       confidence: 0.82,
       sensitivity: "low",
       needs_user_confirmation: false,
-      source_message_id: sourceMessageId,
-    });
-  }
-  if (/身份证|地址|手机号|健康|心理|家人|学校|公司|位置/.test(text)) {
-    candidates.push({
-      should_store: false,
-      memory_type: "sensitive_memory",
-      content: text,
-      confidence: 0.75,
-      sensitivity: "high",
-      needs_user_confirmation: true,
       source_message_id: sourceMessageId,
     });
   }
