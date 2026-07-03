@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FlowSky / 流空</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #27324f, #090b13 55%); color: #eef2ff; display: grid; place-items: center; }
+      main { width: min(860px, calc(100vw - 32px)); height: min(760px, calc(100vh - 32px)); display: grid; grid-template-rows: auto 1fr auto; gap: 14px; }
+      header { display: flex; justify-content: space-between; align-items: end; }
+      h1 { margin: 0; font-size: 26px; letter-spacing: 0.03em; }
+      .status { color: #a7b3d7; font-size: 13px; }
+      #messages { overflow: auto; padding: 18px; border: 1px solid rgba(255,255,255,.14); border-radius: 20px; background: rgba(8, 12, 24, .62); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+      .msg { max-width: 78%; margin: 10px 0; padding: 12px 14px; border-radius: 16px; white-space: pre-wrap; line-height: 1.55; }
+      .user { margin-left: auto; background: #4f46e5; }
+      .ai { margin-right: auto; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.08); }
+      form { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+      textarea { resize: none; min-height: 54px; border-radius: 16px; border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.28); color: #fff; padding: 13px 14px; font: inherit; outline: none; }
+      button { border: 0; border-radius: 16px; padding: 0 22px; background: #f0b6ff; color: #1c1024; font-weight: 700; cursor: pointer; }
+      button:disabled { opacity: .55; cursor: wait; }
+      .meta { color: #9aa7cb; font-size: 12px; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>FlowSky / 流空</h1>
+          <div class="status" id="status">本地 MVP · DeepSeek streaming · Memory/Safety gates</div>
+        </div>
+        <div class="status">user_id: demo-user</div>
+      </header>
+      <section id="messages" aria-live="polite"></section>
+      <form id="chatForm">
+        <textarea id="input" placeholder="说点什么，比如：今天有点累" required></textarea>
+        <button id="send" type="submit">发送</button>
+      </form>
+    </main>
+    <script>
+      const messages = document.querySelector('#messages');
+      const form = document.querySelector('#chatForm');
+      const input = document.querySelector('#input');
+      const send = document.querySelector('#send');
+      const statusEl = document.querySelector('#status');
+
+      function append(role, text = '') {
+        const box = document.createElement('div');
+        box.className = `msg ${role}`;
+        box.textContent = text;
+        messages.appendChild(box);
+        messages.scrollTop = messages.scrollHeight;
+        return box;
+      }
+
+      function parseSse(buffer, onEvent) {
+        const parts = buffer.split('\n\n');
+        const rest = parts.pop() ?? '';
+        for (const part of parts) {
+          const lines = part.split('\n');
+          const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim();
+          const data = lines.find((line) => line.startsWith('data:'))?.slice(5).trim();
+          if (event && data) onEvent(event, JSON.parse(data));
+        }
+        return rest;
+      }
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        send.disabled = true;
+        append('user', text);
+        const aiBox = append('ai', '');
+        statusEl.textContent = 'Mika 正在回复…';
+        try {
+          const res = await fetch('/chat/stream', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              user_id: 'demo-user',
+              session_id: 'demo-session',
+              input: { type: 'text', text },
+              mode: 'girlfriend_chat',
+              client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: true, voice_enabled: false },
+            }),
+          });
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            buffer = parseSse(buffer, (name, data) => {
+              if (name === 'text_delta') aiBox.textContent += data.delta;
+              if (name === 'avatar_signal') statusEl.textContent = `emotion=${data.emotion}, action=${data.action}`;
+              if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选';
+              messages.scrollTop = messages.scrollHeight;
+            });
+          }
+          statusEl.textContent = '就绪';
+        } catch (error) {
+          aiBox.textContent = '连接失败：' + error.message;
+          statusEl.textContent = '错误';
+        } finally {
+          send.disabled = false;
+          input.focus();
+        }
+      });
+    </script>
+  </body>
+</html>

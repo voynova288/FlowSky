@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build/test output
+dist/
+coverage/
+.nyc_output/
+.flowsky/
+*.db
+*.db-shm
+*.db-wal
+
+# secrets / local config
+.env
+.env.*
+!.env.example
+API.txt
+*.key
+*.pem
+
+# logs
+*.log
+logs/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
