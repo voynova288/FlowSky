@@ -116,7 +116,7 @@ DeepSeek API（用户自带 key）
 - API key 永远不进前端 bundle，不写入 SQLite，不进入日志
 - 前端 BYOK key 仅保存在 `sessionStorage`
 - 默认不保存完整 prompt，只保存 prompt hash、usage、latency、safety flags
-- 默认允许低风险工具：时间、timer mock、会话总结、读取/更新本地设置
+- 默认允许低风险工具：时间、进程内本地 timer、会话总结、读取/更新本地设置
 - 默认禁止 shell、完整文件系统、浏览器历史、联系人、邮件、支付、自动发消息等高风险工具
 
 ## 目录

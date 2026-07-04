@@ -205,6 +205,18 @@ export interface SafetyResult {
   rewritten_text?: string | null;
 }
 
+export type LocalTimerState = "scheduled" | "fired";
+
+export interface LocalTimerStatus {
+  timer_id: string;
+  label: string;
+  seconds: number;
+  created_at: string;
+  fire_at: string;
+  status: LocalTimerState;
+  fired_at?: string;
+}
+
 export interface ToolCallRecord {
   id: string;
   request_id: string;

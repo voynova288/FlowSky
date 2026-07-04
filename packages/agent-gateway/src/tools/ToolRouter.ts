@@ -1,8 +1,8 @@
 import { ToolPermissionGate } from "../safety/ToolPermissionGate.ts";
-import type { LLMToolDefinition, ToolCallRecord, UserSettings } from "../types.ts";
+import type { LLMToolDefinition, LocalTimerStatus, ToolCallRecord, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import { get_current_time } from "./tools/get_current_time.ts";
-import { set_timer } from "./tools/set_timer.ts";
+import { getTimerStatus, listTimerStatuses, set_timer } from "./tools/set_timer.ts";
 import { summarize_session } from "./tools/summarize_session.ts";
 import { get_user_settings, SettingsStore, type SettingsStoreLike, update_user_settings } from "./tools/settings_tools.ts";
 
@@ -36,10 +36,10 @@ export class ToolRouter {
         type: "function",
         function: {
           name: "set_timer",
-          description: "Set a low-risk local reminder timer.",
+          description: "Schedule a low-risk in-process local reminder timer. It updates local timer status only and does not trigger OS notifications.",
           parameters: {
             type: "object",
-            properties: { seconds: { type: "number" }, label: { type: "string" } },
+            properties: { seconds: { type: "number", minimum: 1, maximum: 86400 }, label: { type: "string", maxLength: 120 } },
             required: ["seconds"],
             additionalProperties: false,
           },
@@ -88,6 +88,14 @@ export class ToolRouter {
         },
       },
     ].filter((definition) => this.permissionGate.isAllowed(definition.function.name));
+  }
+
+  getTimerStatus(timerId: string): LocalTimerStatus | undefined {
+    return getTimerStatus(timerId);
+  }
+
+  listTimerStatuses(): LocalTimerStatus[] {
+    return listTimerStatuses();
   }
 
   async execute(params: {
