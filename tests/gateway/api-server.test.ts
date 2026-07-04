@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AgentGateway, createDefaultAgentGateway, LocalCharacterStore, SqliteStateStore } from "../../packages/agent-gateway/src/index.ts";
@@ -227,4 +227,31 @@ test("chat routes reject malformed bodies with bad_request before model path", a
       }
     }
   });
+});
+
+
+test("web UI exposes avatar state panel and voice checkbox", () => {
+  const rootHtml = readFileSync("apps/web/index.html", "utf8");
+  assert.match(rootHtml, /id="avatarStatePanel"/);
+  assert.match(rootHtml, /id="avatarEmotion"/);
+  assert.match(rootHtml, /id="avatarAction"/);
+  assert.match(rootHtml, /id="voiceStatus"/);
+  assert.match(rootHtml, /(?:id="voiceEnabled"\s+type="checkbox"|type="checkbox"\s+id="voiceEnabled")/);
+});
+
+test("web UI persists voice setting and passes it in client_context", () => {
+  const rootHtml = readFileSync("apps/web/index.html", "utf8");
+  assert.match(rootHtml, /localStorage\.getItem\('liukong\.voice_enabled'\)/);
+  assert.match(rootHtml, /localStorage\.setItem\('liukong\.voice_enabled'/);
+  assert.match(rootHtml, /voice_enabled:\s*voiceEnabled\.checked/);
+  assert.equal(rootHtml.includes("voice_enabled: false"), false);
+});
+
+test("web UI speaks final assistant text through browser speechSynthesis only", () => {
+  const rootHtml = readFileSync("apps/web/index.html", "utf8");
+  assert.match(rootHtml, /function speakFinalAssistantText/);
+  assert.match(rootHtml, /SpeechSynthesisUtterance/);
+  assert.match(rootHtml, /speechSynthesis\.speak/);
+  assert.match(rootHtml, /speakFinalAssistantText\(aiBox\.textContent\)/);
+  assert.doesNotMatch(rootHtml, /\/tts|elevenlabs|api\.openai\.com\/v1\/audio|speech\.googleapis|polly/i);
 });

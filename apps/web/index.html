@@ -33,6 +33,9 @@
       .session.active { outline: 1px solid #f0b6ff; }
       .memory.pending { outline: 1px solid #f0b6ff; }
       .memory-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 8px; }
+      .avatar-state { display: grid; grid-template-columns: 64px 1fr; gap: 12px; align-items: center; }
+      .avatar-face { width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(145deg, #f0b6ff, #8ea7ff); color: #1c1024; font-size: 28px; box-shadow: 0 14px 40px rgba(240,182,255,.24); }
+      .state-line { display: flex; justify-content: space-between; gap: 8px; margin: 4px 0; font-size: 13px; }
       @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } .chat { min-height: 70vh; } }
     </style>
   </head>
@@ -69,8 +72,20 @@
           <div class="row"><label>长期记忆</label><input id="memoryEnabled" type="checkbox" /></div>
           <div class="row"><label>恋爱真实感</label><select id="romanceLevel"><option value="0">0</option><option value="1">1</option><option value="2">2</option></select></div>
           <div class="row"><label>Avatar</label><input id="avatarEnabled" type="checkbox" /></div>
+          <div class="row"><label>本地语音</label><input id="voiceEnabled" type="checkbox" /></div>
           <button class="secondary" id="loadSettings" type="button">读取</button>
           <button id="saveSettings" type="button">保存</button>
+        </section>
+        <section class="panel" id="avatarStatePanel" aria-live="polite">
+          <h2>Avatar / Voice</h2>
+          <div class="avatar-state">
+            <div class="avatar-face" id="avatarFace">🙂</div>
+            <div>
+              <div class="state-line"><span>情绪</span><strong id="avatarEmotion">neutral</strong></div>
+              <div class="state-line"><span>动作</span><strong id="avatarAction">idle</strong></div>
+              <div class="meta" id="voiceStatus">语音关闭</div>
+            </div>
+          </div>
         </section>
         <section class="panel">
           <h2>角色卡</h2>
@@ -95,7 +110,7 @@
       const boot = window.__LIUKONG_LOCAL__ || { localToken: '', profileId: 'default' };
       const $ = (id) => document.querySelector(id);
       const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
-      const apiKey = $('#apiKey'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), characterJson = $('#characterJson'), memoriesEl = $('#memories');
+      const apiKey = $('#apiKey'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories');
       apiKey.value = sessionStorage.getItem('liukong.deepseek_api_key') || '';
       profileId.value = localStorage.getItem('liukong.profile_id') || boot.profileId || 'default';
       sessionId.value = localStorage.getItem('liukong.session_id') || 'local-session';
@@ -110,10 +125,18 @@
       function profileQuery() { return '?profile_id=' + encodeURIComponent(profileId.value.trim() || 'default'); }
       function append(role, text = '') { const box = document.createElement('div'); box.className = `msg ${role}`; box.textContent = text; messages.appendChild(box); messages.scrollTop = messages.scrollHeight; return box; }
       function parseSse(buffer, onEvent) { const parts = buffer.split('\n\n'); const rest = parts.pop() || ''; for (const part of parts) { const event = part.split('\n').find(l => l.startsWith('event:'))?.slice(6).trim(); const data = part.split('\n').find(l => l.startsWith('data:'))?.slice(5).trim(); if (event && data) onEvent(event, JSON.parse(data)); } return rest; }
+      function loadVoiceSetting() { voiceEnabled.checked = localStorage.getItem('liukong.voice_enabled') === 'true'; updateVoiceStatus(); }
+      function saveVoiceSetting() { localStorage.setItem('liukong.voice_enabled', voiceEnabled.checked ? 'true' : 'false'); updateVoiceStatus(); }
+      function updateVoiceStatus(extra = '') { voiceStatus.textContent = voiceEnabled.checked ? ('语音开启' + (extra ? ' · ' + extra : '')) : '语音关闭'; }
+      function cancelSpeech() { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); }
+      function speakFinalAssistantText(text) { const finalText = String(text || '').trim(); if (!voiceEnabled.checked || !finalText) return; if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') { updateVoiceStatus('当前浏览器不支持'); return; } cancelSpeech(); const utterance = new SpeechSynthesisUtterance(finalText); utterance.lang = document.documentElement.lang || 'zh-CN'; utterance.onend = () => updateVoiceStatus('已读完'); utterance.onerror = () => updateVoiceStatus('朗读失败'); updateVoiceStatus('朗读中'); window.speechSynthesis.speak(utterance); }
+      function updateAvatarState(data) { const emotion = String(data?.emotion || 'neutral'); const action = String(data?.action || 'idle'); avatarEmotion.textContent = emotion; avatarAction.textContent = action; avatarFace.textContent = ({ gentle: '🙂', caring: '🤍', playful: '😉', concerned: '🫧', neutral: '🙂' }[emotion] || '🙂'); if (avatarEnabled.checked) statusEl.textContent = `emotion=${emotion}, action=${action}`; }
 
-      $('#saveClient').onclick = () => { localStorage.setItem('liukong.profile_id', profileId.value.trim() || 'default'); localStorage.setItem('liukong.session_id', sessionId.value.trim() || 'local-session'); sessionStorage.setItem('liukong.deepseek_api_key', apiKey.value.trim()); statusEl.textContent = '本地会话设置已保存；API key 仅保存到 sessionStorage'; };
+
+      $('#saveClient').onclick = () => { localStorage.setItem('liukong.profile_id', profileId.value.trim() || 'default'); localStorage.setItem('liukong.session_id', sessionId.value.trim() || 'local-session'); sessionStorage.setItem('liukong.deepseek_api_key', apiKey.value.trim()); saveVoiceSetting(); statusEl.textContent = '本地会话设置已保存；API key 仅保存到 sessionStorage；语音设置保存在本浏览器'; };
       $('#loadSettings').onclick = () => loadSettings().catch(showError);
       $('#saveSettings').onclick = () => saveSettings().catch(showError);
+      voiceEnabled.onchange = () => { saveVoiceSetting(); if (!voiceEnabled.checked) cancelSpeech(); };
       $('#newSession').onclick = () => newSession().catch(showError);
       $('#refreshSessions').onclick = () => loadSessions().catch(showError);
       $('#refreshMemories').onclick = () => loadMemories().catch(showError);
@@ -166,9 +189,13 @@
         memoryEnabled.checked = !!s.memory_enabled;
         romanceLevel.value = String(s.romance_realism_level ?? 1);
         avatarEnabled.checked = !!s.avatar_enabled;
+        if (typeof s.voice_enabled === 'boolean') voiceEnabled.checked = !!s.voice_enabled;
+        else loadVoiceSetting();
+        saveVoiceSetting();
       }
       async function saveSettings() {
-        await fetch('/settings' + profileQuery(), { method: 'PATCH', headers: headers(true), body: JSON.stringify({ memory_enabled: memoryEnabled.checked, romance_realism_level: Number(romanceLevel.value), avatar_enabled: avatarEnabled.checked }) });
+        await fetch('/settings' + profileQuery(), { method: 'PATCH', headers: headers(true), body: JSON.stringify({ memory_enabled: memoryEnabled.checked, romance_realism_level: Number(romanceLevel.value), avatar_enabled: avatarEnabled.checked, voice_enabled: voiceEnabled.checked }) });
+        saveVoiceSetting();
         statusEl.textContent = '设置已保存到本机';
       }
       async function loadMemories() {
@@ -218,17 +245,17 @@
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const text = input.value.trim(); if (!text) return;
-        input.value = ''; send.disabled = true; append('user', text); const aiBox = append('ai', ''); statusEl.textContent = 'Mika 正在回复…';
+        cancelSpeech(); input.value = ''; send.disabled = true; append('user', text); const aiBox = append('ai', ''); statusEl.textContent = 'Mika 正在回复…';
         try {
-          const res = await fetch('/chat/stream', { method: 'POST', headers: headers(true, true), body: JSON.stringify({ profile_id: profileId.value.trim() || 'default', session_id: sessionId.value.trim() || 'local-session', input: { type: 'text', text }, mode: 'girlfriend_chat', client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: avatarEnabled.checked, voice_enabled: false } }) });
+          const res = await fetch('/chat/stream', { method: 'POST', headers: headers(true, true), body: JSON.stringify({ profile_id: profileId.value.trim() || 'default', session_id: sessionId.value.trim() || 'local-session', input: { type: 'text', text }, mode: 'girlfriend_chat', client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: avatarEnabled.checked, voice_enabled: voiceEnabled.checked } }) });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           const reader = res.body.getReader(), decoder = new TextDecoder(); let buffer = '';
-          while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); buffer = parseSse(buffer, (name, data) => { if (name === 'text_delta') aiBox.textContent += data.delta; if (name === 'avatar_signal') statusEl.textContent = `emotion=${data.emotion}, action=${data.action}`; if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选'; messages.scrollTop = messages.scrollHeight; }); }
-          statusEl.textContent = '就绪'; await loadMemories(); await loadSessions();
+          while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); buffer = parseSse(buffer, (name, data) => { if (name === 'text_delta') aiBox.textContent += data.delta; if (name === 'avatar_signal') updateAvatarState(data); if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选'; messages.scrollTop = messages.scrollHeight; }); }
+          speakFinalAssistantText(aiBox.textContent); statusEl.textContent = '就绪'; await loadMemories(); await loadSessions();
         } catch (error) { aiBox.textContent = '连接失败：' + error.message; statusEl.textContent = '错误'; }
         finally { send.disabled = false; input.focus(); }
       });
-      loadSettings().catch(() => {}); loadMemories().catch(() => {}); loadCharacter().catch(() => {}); loadSessions().catch(() => {});
+      loadVoiceSetting(); loadSettings().catch(() => {}); loadMemories().catch(() => {}); loadCharacter().catch(() => {}); loadSessions().catch(() => {});
     </script>
   </body>
 </html>
