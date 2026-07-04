@@ -53,7 +53,7 @@
         <header><h2>本地控制台</h2><div class="meta">不需要账号。API key 只发给本机 localhost 后端，不写入数据库。</div></header>
         <section class="panel">
           <h2>模型密钥</h2>
-          <div class="row stack"><label>DeepSeek API key（当前浏览器会话保存）</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
+          <div class="row stack"><label>DeepSeek API key（可选；当前浏览器会话保存，留空则使用后端 .env.local/环境变量）</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
           <div class="row stack"><label>本地 profile</label><input id="profileId" value="default" /></div>
           <button class="secondary" id="saveClient" type="button">保存本地会话设置</button>
         </section>
@@ -218,7 +218,6 @@
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const text = input.value.trim(); if (!text) return;
-        if (!apiKey.value.trim()) { statusEl.textContent = '请先填入 DeepSeek API key，或在 .env.local 设置 DEEPSEEK_API_KEY'; return; }
         input.value = ''; send.disabled = true; append('user', text); const aiBox = append('ai', ''); statusEl.textContent = 'Mika 正在回复…';
         try {
           const res = await fetch('/chat/stream', { method: 'POST', headers: headers(true, true), body: JSON.stringify({ profile_id: profileId.value.trim() || 'default', session_id: sessionId.value.trim() || 'local-session', input: { type: 'text', text }, mode: 'girlfriend_chat', client_context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, avatar_enabled: avatarEnabled.checked, voice_enabled: false } }) });

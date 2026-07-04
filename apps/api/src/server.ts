@@ -40,6 +40,14 @@ const USER_SETTING_KEYS = new Set<keyof UserSettings>([
   "adult_romance_enabled",
 ]);
 
+
+type LocalChatRequestBody = Omit<ChatRequest, "user_id"> & Partial<Pick<ChatRequest, "user_id">>;
+
+const CHAT_MODES = new Set(["girlfriend_chat", "girlfriend_complex", "memory_extraction", "safety_rewrite"]);
+const CHAT_BODY_KEYS = new Set(["request_id", "user_id", "profile_id", "session_id", "input", "mode", "client_context"]);
+const CHAT_INPUT_KEYS = new Set(["type", "text"]);
+const CLIENT_CONTEXT_KEYS = new Set(["timezone", "voice_enabled", "avatar_enabled"]);
+
 export interface CreateApiServerOptions {
   gateway?: AgentGateway;
   gatewayFactory?: (apiKey: string) => AgentGateway;
@@ -89,6 +97,52 @@ function sseWrite(res: ServerResponse, event: StreamEvent): void {
 
 function requestedProfileId(url: URL, body?: Partial<ChatRequest>): string | null {
   return body?.profile_id ?? body?.user_id ?? url.searchParams.get("profile_id") ?? url.searchParams.get("user_id");
+}
+
+function sanitizeChatRequest(raw: unknown): LocalChatRequestBody {
+  if (!isObject(raw)) throw new Error("bad_request");
+  for (const key of Object.keys(raw)) {
+    if (!CHAT_BODY_KEYS.has(key)) throw new Error("bad_request");
+  }
+  if (typeof raw.session_id !== "string" || raw.session_id.trim().length === 0 || raw.session_id.length > 120) throw new Error("bad_request");
+  if (!isObject(raw.input)) throw new Error("bad_request");
+  for (const key of Object.keys(raw.input)) {
+    if (!CHAT_INPUT_KEYS.has(key)) throw new Error("bad_request");
+  }
+  if (raw.input.type !== "text" || typeof raw.input.text !== "string" || raw.input.text.trim().length === 0 || raw.input.text.length > 20_000) throw new Error("bad_request");
+  const body: LocalChatRequestBody = {
+    session_id: raw.session_id,
+    input: { type: "text", text: raw.input.text },
+  };
+  for (const key of ["request_id", "user_id", "profile_id"] as const) {
+    if (key in raw) {
+      if (typeof raw[key] !== "string" || raw[key].length > 120) throw new Error("bad_request");
+      body[key] = raw[key];
+    }
+  }
+  if ("mode" in raw) {
+    if (typeof raw.mode !== "string" || !CHAT_MODES.has(raw.mode)) throw new Error("bad_request");
+    body.mode = raw.mode as LocalChatRequestBody["mode"];
+  }
+  if ("client_context" in raw) {
+    if (!isObject(raw.client_context)) throw new Error("bad_request");
+    for (const key of Object.keys(raw.client_context)) {
+      if (!CLIENT_CONTEXT_KEYS.has(key)) throw new Error("bad_request");
+    }
+    const context: NonNullable<LocalChatRequestBody["client_context"]> = {};
+    if ("timezone" in raw.client_context) {
+      if (typeof raw.client_context.timezone !== "string" || raw.client_context.timezone.length > 120) throw new Error("bad_request");
+      context.timezone = raw.client_context.timezone;
+    }
+    for (const key of ["voice_enabled", "avatar_enabled"] as const) {
+      if (key in raw.client_context) {
+        if (typeof raw.client_context[key] !== "boolean") throw new Error("bad_request");
+        context[key] = raw.client_context[key];
+      }
+    }
+    body.client_context = context;
+  }
+  return body;
 }
 
 function sanitizeMemoryPatch(raw: unknown): { content?: string; memory_type?: MemoryType } {
@@ -294,7 +348,7 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
       }
 
       if (req.method === "POST" && url.pathname === "/chat") {
-        const body = await readJson<ChatRequest>(req);
+        const body = sanitizeChatRequest(await readJson<unknown>(req));
         const localAuth = auth(req, url, body);
         if (!localAuth) return writeUnauthorized(res);
         const apiKey = providerApiKey(req);
@@ -304,7 +358,7 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
       }
 
       if (req.method === "POST" && url.pathname === "/chat/stream") {
-        const body = await readJson<ChatRequest>(req);
+        const body = sanitizeChatRequest(await readJson<unknown>(req));
         const localAuth = auth(req, url, body);
         if (!localAuth) return writeUnauthorized(res);
         const apiKey = providerApiKey(req);

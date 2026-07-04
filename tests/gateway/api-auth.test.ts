@@ -92,3 +92,54 @@ test("local profile header scopes settings without login", async () => {
     assert.equal((await profileB.json()).preferred_name, undefined);
   });
 });
+
+
+test("server env DeepSeek key is accepted without browser BYOK header", async () => {
+  const previous = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "server-env-test-key";
+  const token = "local-test-token";
+  const stateStore = new SqliteStateStore(":memory:");
+  let seenKey = "";
+  const server = createApiServer({
+    stateStore,
+    localToken: token,
+    requireLocalToken: true,
+    gatewayFactory: (apiKey) => {
+      seenKey = apiKey;
+      return new AgentGateway({ provider: new FakeProvider() });
+    },
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const baseUrl = `http://127.0.0.1:${address!.port}`;
+  try {
+    const ok = await fetch(`${baseUrl}/chat`, {
+      method: "POST",
+      headers: { "x-liukong-local-token": token, "content-type": "application/json" },
+      body: JSON.stringify({ profile_id: "default", session_id: "s1", input: { type: "text", text: "hi" } }),
+    });
+    const body = await ok.json();
+    assert.equal(ok.status, 200);
+    assert.equal(seenKey, "server-env-test-key");
+    assert.equal(JSON.stringify(body).includes("server-env-test-key"), false);
+
+    seenKey = "";
+    const stream = await fetch(`${baseUrl}/chat/stream`, {
+      method: "POST",
+      headers: { "x-liukong-local-token": token, "content-type": "application/json" },
+      body: JSON.stringify({ profile_id: "default", session_id: "s1", input: { type: "text", text: "hi" } }),
+    });
+    const streamBody = await stream.text();
+    assert.equal(stream.status, 200);
+    assert.equal(seenKey, "server-env-test-key");
+    assert.match(streamBody, /event: done/);
+    assert.equal(streamBody.includes("server-env-test-key"), false);
+    assert.equal(JSON.stringify(stateStore.auditEntries()).includes("server-env-test-key"), false);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    stateStore.close();
+    if (previous === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previous;
+  }
+});

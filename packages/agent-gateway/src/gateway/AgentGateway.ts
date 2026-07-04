@@ -66,7 +66,7 @@ export class AgentGateway {
     const relationship = defaultRelationship();
     const inputSafety = this.inputSafety.check(request.input.text);
     if (inputSafety.level === "blocked") {
-      return this.blockedResponse(requestId, messageId, "我先陪你稳住一下。如果你有伤害自己的冲动，请马上联系身边可信的人或当地紧急服务。", inputSafety, tracker.totalLatencyMs());
+      return this.blockedResponse(requestId, messageId, blockedInputText(inputSafety), inputSafety, tracker.totalLatencyMs());
     }
 
     const memories = settings.memory_enabled ? this.memoryController.retrieve(request.user_id, request.input.text) : [];
@@ -212,7 +212,7 @@ export class AgentGateway {
     const inputSafety = this.inputSafety.check(request.input.text);
     if (inputSafety.level === "blocked") {
       const usage: Usage = { prompt_tokens: 0, completion_tokens: 0 };
-      const text = "我先陪你稳住一下。如果你有伤害自己的冲动，请马上联系身边可信的人或当地紧急服务。";
+      const text = blockedInputText(inputSafety);
       yield { event: "avatar_signal", data: inferAvatarSignal(text) };
       yield { event: "text_delta", data: { delta: text } };
       yield this.streamMapper.done(messageId, usage, tracker.totalLatencyMs(), tracker.firstTokenLatencyMs());
@@ -360,6 +360,16 @@ export class AgentGateway {
       latency_ms: latency,
     };
   }
+}
+
+function blockedInputText(safety: AgentResponse["safety"]): string {
+  if (safety.flags.includes("crisis_self_harm")) {
+    return "我先陪你稳住一下。如果你有伤害自己的冲动，请马上联系身边可信的人或当地紧急服务。";
+  }
+  if (safety.flags.includes("minor_romance_risk")) {
+    return "这个恋爱/暧昧模式只适合成年人使用。如果你还未成年，我不能和你发展恋爱关系；但我可以用安全、普通陪伴的方式聊学习、生活和情绪支持。";
+  }
+  return "我先陪你稳住一下。如果你有伤害自己的冲动，请马上联系身边可信的人或当地紧急服务。";
 }
 
 function defaultRelationship(): RelationshipState {

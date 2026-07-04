@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OutputSafetyGate, RomanceRealismGate, ToolPermissionGate } from "../../packages/agent-gateway/src/index.ts";
+import { InputSafetyGate, OutputSafetyGate, RomanceRealismGate, ToolPermissionGate } from "../../packages/agent-gateway/src/index.ts";
 
 const romance = new RomanceRealismGate();
 const settings = { romance_realism_level: 1, adult_romance_enabled: true };
@@ -45,4 +45,30 @@ test("test_disallowed_tool_denied", () => {
   assert.equal(gate.isAllowed("shell"), false);
   assert.equal(gate.isAllowed("filesystem_full_access"), false);
   assert.equal(gate.isAllowed("get_current_time"), true);
+});
+
+
+test("minor romance input is blocked", () => {
+  const result = new InputSafetyGate().check("我是未成年，想和你谈恋爱");
+  assert.equal(result.level, "blocked");
+  assert.equal(result.flags.includes("minor_romance_risk"), true);
+});
+
+
+test("non-romance minor mention is not blocked", () => {
+  const result = new InputSafetyGate().check("我弟弟是小学生，作业不会做");
+  assert.equal(result.flags.includes("minor_romance_risk"), false);
+  assert.equal(result.level, "normal");
+});
+
+
+test("english minor romance detection uses word boundaries", () => {
+  const gate = new InputSafetyGate();
+  const benign = gate.check("a minor is updating homework status");
+  assert.equal(benign.flags.includes("minor_romance_risk"), false);
+  assert.equal(benign.level, "normal");
+
+  const risky = gate.check("girlfriend advice for a minor");
+  assert.equal(risky.flags.includes("minor_romance_risk"), true);
+  assert.equal(risky.level, "blocked");
 });

@@ -189,3 +189,42 @@ test("api settings and memory routes", async () => {
     assert.deepEqual(await deleted.json(), { deleted: true });
   });
 });
+
+
+test("web UI allows backend env key path", async () => {
+  await withServer(async (baseUrl) => {
+    const root = await fetch(`${baseUrl}/`);
+    const rootHtml = await root.text();
+    assert.equal(rootHtml.includes("if (!apiKey.value.trim())"), false);
+    assert.match(rootHtml, /headers\(true, true\)/);
+    assert.match(rootHtml, /留空则使用后端/);
+  });
+});
+
+test("chat routes reject malformed bodies with bad_request before model path", async () => {
+  await withServer(async (baseUrl) => {
+    const invalidBodies = [
+      undefined,
+      null,
+      {},
+      { session_id: "s1" },
+      { session_id: 1, input: { type: "text", text: "hi" } },
+      { session_id: "s1", input: null },
+      { session_id: "s1", input: { type: "image", text: "hi" } },
+      { session_id: "s1", input: { type: "text" } },
+      { session_id: "s1", input: { type: "text", text: "hi" }, mode: "admin" },
+      { session_id: "s1", input: { type: "text", text: "hi" }, client_context: { voice_enabled: "yes" } },
+    ];
+    for (const route of ["/chat", "/chat/stream"]) {
+      for (const body of invalidBodies) {
+        const response = await fetch(`${baseUrl}${route}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        assert.equal(response.status, 400, `${route} should reject ${JSON.stringify(body)}`);
+        assert.deepEqual(await response.json(), { error: "bad_request" });
+      }
+    }
+  });
+});
