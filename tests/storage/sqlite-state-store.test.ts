@@ -144,3 +144,32 @@ test("sqlite request logger writes audit rows without full prompt", () => {
     store.close();
   });
 });
+
+
+test("sqlite relationship state persists, exports, and clears", () => {
+  withTempDb((dbPath) => {
+    const first = new SqliteStateStore(dbPath);
+    assert.equal(first.getRelationshipState("u1"), null);
+    assert.deepEqual(first.saveRelationshipState("u1", { stage: "romantic_light", intimacy_level: 4, trust_level: 3 }), {
+      stage: "romantic_light",
+      intimacy_level: 4,
+      trust_level: 3,
+    });
+    first.close();
+
+    const second = new SqliteStateStore(dbPath);
+    assert.deepEqual(second.getRelationshipState("u1"), {
+      stage: "romantic_light",
+      intimacy_level: 4,
+      trust_level: 3,
+    });
+    assert.equal(second.getRelationshipState("u2"), null);
+    const exported = second.exportLocalData("u1") as any;
+    assert.equal(exported.relationship.stage, "romantic_light");
+    second.clearLocalData("u1");
+    assert.equal(second.getRelationshipState("u1"), null);
+    assert.throws(() => second.saveRelationshipState("u1", { stage: "unknown" as any, intimacy_level: 1, trust_level: 1 }), /bad_request/);
+    assert.throws(() => second.saveRelationshipState("u1", { stage: "close", intimacy_level: 99, trust_level: 1 }), /bad_request/);
+    second.close();
+  });
+});

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AgentGateway, RequestLogger } from "../../packages/agent-gateway/src/index.ts";
+import { AgentGateway, RequestLogger, type RelationshipState } from "../../packages/agent-gateway/src/index.ts";
 import { FakeProvider } from "../helpers.ts";
 
 test("test_gateway_returns_agent_response", async () => {
@@ -72,4 +72,51 @@ test("crisis guidance takes precedence over minor romance refusal", async () => 
   assert.equal(response.safety.flags.includes("minor_romance_risk"), true);
   assert.equal(provider.completeCalls, 0);
   assert.match(response.text, /紧急服务|可信的人/);
+});
+
+
+function relationshipSystemMessage(request: any): string {
+  return request.messages.find((message: any) => message.role === "system" && String(message.content).startsWith("关系状态："))?.content ?? "";
+}
+
+test("gateway chat uses persisted relationship state when available", async () => {
+  const provider = new FakeProvider();
+  const relationship: RelationshipState = { stage: "romantic_light", intimacy_level: 4, trust_level: 3 };
+  const gateway = new AgentGateway({
+    provider,
+    conversationStore: {
+      getRelationshipState: (userId) => (userId === "u1" ? relationship : null),
+    },
+  });
+  await gateway.chat({ user_id: "u1", session_id: "s1", input: { type: "text", text: "今天有点累" } });
+  const message = relationshipSystemMessage(provider.lastRequest);
+  assert.match(message, /romantic_light/);
+  assert.match(message, /"intimacy_level":4/);
+  assert.match(message, /"trust_level":3/);
+});
+
+test("gateway chat falls back to default relationship state", async () => {
+  const provider = new FakeProvider();
+  const gateway = new AgentGateway({ provider });
+  await gateway.chat({ user_id: "u1", session_id: "s1", input: { type: "text", text: "今天有点累" } });
+  const message = relationshipSystemMessage(provider.lastRequest);
+  assert.match(message, /friendly_romantic/);
+  assert.match(message, /"intimacy_level":2/);
+  assert.match(message, /"trust_level":2/);
+});
+
+test("gateway stream uses persisted relationship state when available", async () => {
+  const provider = new FakeProvider();
+  const relationship: RelationshipState = { stage: "romantic_light", intimacy_level: 4, trust_level: 3 };
+  const gateway = new AgentGateway({
+    provider,
+    conversationStore: {
+      getRelationshipState: () => relationship,
+    },
+  });
+  for await (const _event of gateway.stream({ user_id: "u1", session_id: "s1", input: { type: "text", text: "今天有点累" } })) {}
+  const message = relationshipSystemMessage(provider.lastRequest);
+  assert.match(message, /romantic_light/);
+  assert.match(message, /"intimacy_level":4/);
+  assert.match(message, /"trust_level":3/);
 });

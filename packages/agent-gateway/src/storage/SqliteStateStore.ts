@@ -2,11 +2,20 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { defaultLocalDbPath, defaultLocalProfileId } from "../local/paths.ts";
 import { DatabaseSync } from "node:sqlite";
-import type { LLMMessage, LocalChatMessage, LocalSession, MemoryCandidate, StoredMemory, ToolCallRecord, UserSettings } from "../types.ts";
+import type { LLMMessage, LocalChatMessage, LocalSession, MemoryCandidate, RelationshipStage, RelationshipState, StoredMemory, ToolCallRecord, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import type { MemoryStoreLike } from "../memory/MemoryStore.ts";
 import { DEFAULT_USER_SETTINGS, type SettingsStoreLike } from "../tools/tools/settings_tools.ts";
 import type { RequestLogEntry } from "../observability/RequestLogger.ts";
+
+const RELATIONSHIP_STAGES = new Set<RelationshipStage>([
+  "stranger",
+  "familiar",
+  "close",
+  "friendly_romantic",
+  "romantic_light",
+  "romantic_stable",
+]);
 
 const MIGRATIONS = [
   {
@@ -405,6 +414,28 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     return next;
   }
 
+  getRelationshipState(userId: string): RelationshipState | null {
+    const row = this.db
+      .prepare("SELECT stage, intimacy_level, trust_level FROM relationship_states WHERE user_id = ?")
+      .get(userId) as any | undefined;
+    if (!row) return null;
+    return rowToRelationship(row);
+  }
+
+  saveRelationshipState(userId: string, relationship: RelationshipState): RelationshipState {
+    const next = sanitizeRelationshipState(relationship);
+    this.db
+      .prepare(`INSERT INTO relationship_states (user_id, stage, intimacy_level, trust_level, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          stage = excluded.stage,
+          intimacy_level = excluded.intimacy_level,
+          trust_level = excluded.trust_level,
+          updated_at = excluded.updated_at`)
+      .run(userId, next.stage, next.intimacy_level, next.trust_level, nowIso());
+    return next;
+  }
+
   recordAudit(entry: RequestLogEntry): void {
     this.db
       .prepare(`INSERT INTO audit_logs (
@@ -441,7 +472,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     const messages = (this.db
       .prepare("SELECT * FROM messages WHERE user_id = ? ORDER BY created_at ASC, rowid ASC")
       .all(userId) as any[]).map(rowToMessage);
-    const relationship = this.db.prepare("SELECT * FROM relationship_states WHERE user_id = ?").get(userId) ?? null;
+    const relationship = this.getRelationshipState(userId);
     const toolCalls = this.db.prepare("SELECT * FROM tool_calls WHERE user_id = ? ORDER BY created_at DESC").all(userId);
     const auditLogs = this.db
       .prepare(`SELECT request_id, model, thinking_type, first_token_latency, total_latency,
@@ -508,6 +539,25 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
       }
     }
   }
+}
+
+function rowToRelationship(row: any): RelationshipState | null {
+  if (!RELATIONSHIP_STAGES.has(row.stage)) return null;
+  const intimacy = Number(row.intimacy_level);
+  const trust = Number(row.trust_level);
+  if (!Number.isFinite(intimacy) || !Number.isFinite(trust)) return null;
+  if (intimacy < 0 || intimacy > 5 || trust < 0 || trust > 5) return null;
+  return {
+    stage: row.stage,
+    intimacy_level: intimacy,
+    trust_level: trust,
+  };
+}
+
+function sanitizeRelationshipState(relationship: RelationshipState): RelationshipState {
+  const normalized = rowToRelationship(relationship);
+  if (!normalized) throw new Error("bad_request");
+  return normalized;
 }
 
 function rowToMemory(row: any): StoredMemory {

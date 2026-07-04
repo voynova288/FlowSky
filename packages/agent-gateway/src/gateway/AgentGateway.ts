@@ -25,6 +25,7 @@ export interface ConversationStoreLike {
     avatar_action?: string;
   }): void;
   recordToolCall?(record: ToolCallRecord): void;
+  getRelationshipState?(userId: string): RelationshipState | null;
 }
 
 export interface AgentGatewayOptions {
@@ -63,7 +64,6 @@ export class AgentGateway {
     const messageId = randomId("msg");
     const mode = request.mode ?? "girlfriend_chat";
     const settings = this.toolRouter.settingsStore.get(request.user_id);
-    const relationship = defaultRelationship();
     const inputSafety = this.inputSafety.check(request.input.text);
     if (inputSafety.level === "blocked") {
       return this.blockedResponse(requestId, messageId, blockedInputText(inputSafety), inputSafety, tracker.totalLatencyMs());
@@ -72,7 +72,7 @@ export class AgentGateway {
     const memories = settings.memory_enabled ? this.memoryController.retrieve(request.user_id, request.input.text) : [];
     const recentHistory = this.conversationStore?.recentMessages?.(request.user_id, request.session_id, 12) ?? [];
     const messages = this.promptAssembler.assemble({
-      relationship_state: relationship,
+      relationship_state: this.relationshipFor(request.user_id),
       user_settings: settings,
       retrieved_memories: memories,
       recent_history: recentHistory,
@@ -222,7 +222,7 @@ export class AgentGateway {
     const memories = settings.memory_enabled ? this.memoryController.retrieve(request.user_id, request.input.text) : [];
     const recentHistory = this.conversationStore?.recentMessages?.(request.user_id, request.session_id, 12) ?? [];
     const messages = this.promptAssembler.assemble({
-      relationship_state: defaultRelationship(),
+      relationship_state: this.relationshipFor(request.user_id),
       user_settings: settings,
       retrieved_memories: memories,
       recent_history: recentHistory,
@@ -323,6 +323,10 @@ export class AgentGateway {
     } catch (error) {
       yield { event: "error", data: { code: "stream_failed", message: "stream failed" } };
     }
+  }
+
+  private relationshipFor(userId: string): RelationshipState {
+    return this.conversationStore?.getRelationshipState?.(userId) ?? defaultRelationship();
   }
 
   private async bufferProviderStream(
