@@ -3,7 +3,7 @@ import { RequestLogger } from "../observability/RequestLogger.ts";
 import { LatencyTracker } from "../observability/LatencyTracker.ts";
 import { promptHash } from "../observability/TokenMeter.ts";
 import type { LLMProvider } from "../providers/LLMProvider.ts";
-import { modelConfigForMode } from "../providers/model-config.ts";
+import { modelConfigForMode, type LLMProviderName } from "../providers/model-config.ts";
 import { PromptAssembler } from "../prompts/PromptAssembler.ts";
 import { InputSafetyGate } from "../safety/InputSafetyGate.ts";
 import { OutputSafetyGate } from "../safety/OutputSafetyGate.ts";
@@ -30,6 +30,7 @@ export interface ConversationStoreLike {
 
 export interface AgentGatewayOptions {
   provider: LLMProvider;
+  modelProviderName?: LLMProviderName;
   promptAssembler?: PromptAssembler;
   memoryController?: MemoryController;
   toolRouter?: ToolRouter;
@@ -78,7 +79,7 @@ export class AgentGateway {
       recent_history: recentHistory,
       current_user_input: request.input.text,
     });
-    const modelConfig = modelConfigForMode(mode);
+    const modelConfig = modelConfigForMode(mode, this.options.modelProviderName ?? "deepseek");
     const toolRecords: ToolCallRecord[] = [];
     let llm = await this.options.provider.complete({
       ...modelConfig,
@@ -228,7 +229,7 @@ export class AgentGateway {
       recent_history: recentHistory,
       current_user_input: request.input.text,
     });
-    const modelConfig = modelConfigForMode(request.mode ?? "girlfriend_chat");
+    const modelConfig = modelConfigForMode(request.mode ?? "girlfriend_chat", this.options.modelProviderName ?? "deepseek");
     const toolRecords: ToolCallRecord[] = [];
     try {
       // Buffer provider tokens until output/romance gates pass. This trades a

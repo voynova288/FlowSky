@@ -7,14 +7,14 @@ Liukong is designed as a local developer project, not a hosted multi-user cloud 
 - No central account system.
 - No cloud database.
 - No cloud sync by default.
-- The only default external dependency is the model API chosen by the user, currently DeepSeek.
+- The only default external dependency is the model API chosen by the user. DeepSeek is the default provider; OpenAI-compatible OpenAI can be selected explicitly.
 
 ## Secrets
 
 - Never commit `.env.local`, `.env`, database files, logs, tokens, or provider credentials.
-- `DEEPSEEK_API_KEY` may be stored in local `.env.local` or typed into the UI as BYOK.
-- UI-entered BYOK keys are sent only to `localhost` chat endpoints and stored only in browser `sessionStorage`.
-- The backend must never write API keys to SQLite, audit logs, prompt hashes, or error bodies.
+- `DEEPSEEK_API_KEY` or `OPENAI_API_KEY` may be stored in local `.env.local` or typed into the UI as provider-scoped BYOK.
+- UI-entered BYOK keys are sent only to `localhost` chat endpoints and stored only in browser `sessionStorage`, keyed by selected provider. Provider choice is non-secret and may be stored in `localStorage`.
+- The backend must never write API keys to SQLite, audit logs, prompt hashes, or error bodies. Provider base URLs are server-side environment configuration in this minimal patch, not browser-supplied values.
 - `npm run check:secrets` scans tracked files for common key patterns.
 
 ## Local token

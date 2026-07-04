@@ -143,3 +143,113 @@ test("server env DeepSeek key is accepted without browser BYOK header", async ()
     else process.env.DEEPSEEK_API_KEY = previous;
   }
 });
+
+test("provider header selects OpenAI gateway without persisting BYOK key", async () => {
+  const token = "local-test-token";
+  const stateStore = new SqliteStateStore(":memory:");
+  let seenKey = "";
+  let seenProvider = "";
+  const server = createApiServer({
+    stateStore,
+    localToken: token,
+    requireLocalToken: true,
+    gatewayFactory: (apiKey, selection) => {
+      seenKey = apiKey;
+      seenProvider = selection?.providerName ?? "";
+      return new AgentGateway({ provider: new FakeProvider(), modelProviderName: selection?.providerName });
+    },
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const baseUrl = `http://127.0.0.1:${address!.port}`;
+  try {
+    const ok = await fetch(`${baseUrl}/chat`, {
+      method: "POST",
+      headers: { "x-liukong-local-token": token, "x-liukong-provider": "openai", "x-liukong-api-key": "openai-byok-test-key", "content-type": "application/json" },
+      body: JSON.stringify({ profile_id: "default", session_id: "s1", input: { type: "text", text: "hi" } }),
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(seenKey, "openai-byok-test-key");
+    assert.equal(seenProvider, "openai");
+    assert.equal(JSON.stringify(await ok.json()).includes("openai-byok-test-key"), false);
+    assert.equal(JSON.stringify(stateStore.auditEntries()).includes("openai-byok-test-key"), false);
+
+    seenProvider = "";
+    const stream = await fetch(`${baseUrl}/chat/stream`, {
+      method: "POST",
+      headers: { "x-liukong-local-token": token, "x-liukong-provider": "openai", "x-liukong-api-key": "openai-byok-test-key", "content-type": "application/json" },
+      body: JSON.stringify({ profile_id: "default", session_id: "s1", input: { type: "text", text: "hi" } }),
+    });
+    assert.equal(stream.status, 200);
+    assert.equal(seenProvider, "openai");
+    assert.match(await stream.text(), /event: done/);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    stateStore.close();
+  }
+});
+
+test("server env OpenAI key is accepted when provider env selects openai", async () => {
+  const previousProvider = process.env.LIUKONG_PROVIDER;
+  const previousOpenAI = process.env.OPENAI_API_KEY;
+  process.env.LIUKONG_PROVIDER = "openai";
+  process.env.OPENAI_API_KEY = "server-openai-env-test-key";
+  const token = "local-test-token";
+  let seenKey = "";
+  let seenProvider = "";
+  const server = createApiServer({
+    localToken: token,
+    requireLocalToken: true,
+    gatewayFactory: (apiKey, selection) => {
+      seenKey = apiKey;
+      seenProvider = selection?.providerName ?? "";
+      return new AgentGateway({ provider: new FakeProvider(), modelProviderName: selection?.providerName });
+    },
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const baseUrl = `http://127.0.0.1:${address!.port}`;
+  try {
+    const ok = await fetch(`${baseUrl}/chat`, {
+      method: "POST",
+      headers: { "x-liukong-local-token": token, "content-type": "application/json" },
+      body: JSON.stringify({ profile_id: "default", session_id: "s1", input: { type: "text", text: "hi" } }),
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(seenKey, "server-openai-env-test-key");
+    assert.equal(seenProvider, "openai");
+    assert.equal(JSON.stringify(await ok.json()).includes("server-openai-env-test-key"), false);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    if (previousProvider === undefined) delete process.env.LIUKONG_PROVIDER;
+    else process.env.LIUKONG_PROVIDER = previousProvider;
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
+  }
+});
+
+test("invalid provider header returns bad_provider", async () => {
+  const token = "local-test-token";
+  const server = createApiServer({
+    localToken: token,
+    requireLocalToken: true,
+    gatewayFactory: () => new AgentGateway({ provider: new FakeProvider() }),
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const baseUrl = `http://127.0.0.1:${address!.port}`;
+  try {
+    const response = await fetch(`${baseUrl}/chat`, {
+      method: "POST",
+      headers: { "x-liukong-local-token": token, "x-liukong-provider": "anthropic", "x-liukong-api-key": "test-key", "content-type": "application/json" },
+      body: JSON.stringify({ profile_id: "default", session_id: "s1", input: { type: "text", text: "hi" } }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "bad_provider" });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});

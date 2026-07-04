@@ -4,7 +4,7 @@
 
 ```bash
 cp .env.example .env.local
-# edit .env.local and set DEEPSEEK_API_KEY, or type a BYOK key in the UI
+# edit .env.local and set DEEPSEEK_API_KEY or OPENAI_API_KEY, or type a provider-scoped BYOK key in the UI
 npm run dev:api
 ```
 
@@ -29,7 +29,9 @@ LIUKONG_DATA_DIR=./.local npm run dev:api
 ```bash
 docker build -t liukong:local .
 docker run --rm -p 127.0.0.1:3000:3000 \
+  -e LIUKONG_PROVIDER=deepseek \
   -e DEEPSEEK_API_KEY \
+  -e OPENAI_API_KEY \
   -e LIUKONG_HOST=0.0.0.0 \
   -e LIUKONG_ALLOW_NON_LOOPBACK=true \
   -v liukong-data:/data \
@@ -40,7 +42,9 @@ The container stores SQLite state under `/data` by default. Bind the published p
 
 ## Required local settings
 
-- `DEEPSEEK_API_KEY`: optional if the user types BYOK in the UI, required for headless/smoke use.
+- `LIUKONG_PROVIDER`: `deepseek` by default, or `openai`.
+- `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`: optional if the user types BYOK in the UI, required for headless use for the selected provider.
+- `DEEPSEEK_BASE_URL` / `OPENAI_BASE_URL`: server-side OpenAI-compatible endpoints; do not expose arbitrary base URL selection to the browser.
 - `LIUKONG_DATA_DIR`: persistent local data directory, default `~/.liukong` and `/data` in Docker.
 - `LIUKONG_HOST`: defaults to `127.0.0.1`; non-loopback requires `LIUKONG_ALLOW_NON_LOOPBACK=true` and should be used only inside trusted container/sandbox packaging.
 - `LIUKONG_REQUIRE_LOCAL_TOKEN`: defaults to `true`.

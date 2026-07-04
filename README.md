@@ -3,7 +3,7 @@
 流空是一个 **local-first / BYOK / 无账号** 的 AI companion / AI girlfriend 框架。
 
 - 无需注册，clone 后本地运行
-- 用户自带 DeepSeek API key，也可用 `.env.local` 本地配置
+- 用户自带 DeepSeek 或 OpenAI API key，也可用 `.env.local` 本地配置
 - 聊天、记忆、设置、角色卡、日志默认保存在本机
 - 默认不上传遥测，不提供云同步
 - 默认绑定 `127.0.0.1`，不开放局域网访问
@@ -15,7 +15,7 @@
 git clone git@github.com:voynova288/FlowSky.git
 cd FlowSky
 cp .env.example .env.local
-# 编辑 .env.local，填入 DEEPSEEK_API_KEY；也可以在网页里临时填 BYOK key
+# 编辑 .env.local，填入 DEEPSEEK_API_KEY 或 OPENAI_API_KEY；也可以在网页里临时选择 provider 并填 BYOK key
 npm run dev:api
 ```
 
@@ -30,7 +30,7 @@ http://127.0.0.1:3000/
 ```bash
 npm test
 npm run check:secrets
-npm run smoke:deepseek   # 读取 .env.local 或当前 shell 的 DEEPSEEK_API_KEY
+npm run smoke:deepseek   # 仅 DeepSeek live smoke；读取 .env.local 或当前 shell 的 DEEPSEEK_API_KEY
 ```
 
 ## 本地数据
@@ -60,14 +60,14 @@ Browser/Desktop UI
 Local API Server
   ↓
 Local Pi/Agent Gateway
-  ├── DeepSeekProvider / future OpenAI-compatible providers
+  ├── DeepSeekProvider / OpenAI-compatible providers
   ├── PromptAssembler
   ├── CharacterEngine
   ├── MemoryController
   ├── Safety/Romance gates
   └── LocalToolRouter
   ↓
-DeepSeek API（用户自带 key）
+DeepSeek 或 OpenAI API（用户自带 key）
 ```
 
 没有中心化账号、中心化数据库、中心化聊天记录或服务端托管 API key。
@@ -78,7 +78,7 @@ DeepSeek API（用户自带 key）
 
 - `GET /` — minimal local web UI
 - `GET /health`
-- `POST /chat` — 需要 `x-liukong-api-key` 或本机 `.env.local` 的 `DEEPSEEK_API_KEY`
+- `POST /chat` — 需要 `x-liukong-api-key` 或本机 `.env.local` 的 provider key；可用 `x-liukong-provider: deepseek|openai` 选择 provider，默认 deepseek
 - `POST /chat/stream` — SSE: `text_delta` / `avatar_signal` / `memory_candidate` / `done` / `error`
 - `GET /character?profile_id=default`
 - `PATCH /character?profile_id=default`
@@ -100,7 +100,7 @@ DeepSeek API（用户自带 key）
 
 ## 当前范围
 
-- DeepSeekProvider：OpenAI-compatible chat completions、stream、JSON output、thinking 配置、API key 脱敏
+- Provider：DeepSeek 默认，OpenAI 可选；均走 OpenAI-compatible chat completions、stream、JSON output、tool calls、API key 脱敏
 - AgentGateway：统一 `ChatRequest` / `AgentResponse`、streaming events、request_id、usage/latency/safety 记录
 - PromptAssembler：文件化 system/compliance/output policy、JSON 角色卡、关系状态、用户设置、记忆注入
 - MemoryController：记忆抽取、写入 gate、pending/confirm/reject/edit、检索、删除、敏感信息确认逻辑

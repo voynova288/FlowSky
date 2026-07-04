@@ -10,6 +10,8 @@ import {
   validateCharacterCard,
   type CharacterCard,
   type ChatRequest,
+  normalizeProviderName,
+  type LLMProviderName,
   type MemoryType,
   type StreamEvent,
   type UserSettings,
@@ -43,6 +45,11 @@ const USER_SETTING_KEYS = new Set<keyof UserSettings>([
 
 type LocalChatRequestBody = Omit<ChatRequest, "user_id"> & Partial<Pick<ChatRequest, "user_id">>;
 
+export interface ProviderSelection {
+  providerName: LLMProviderName;
+  apiKey: string;
+}
+
 const CHAT_MODES = new Set(["girlfriend_chat", "girlfriend_complex", "memory_extraction", "safety_rewrite"]);
 const CHAT_BODY_KEYS = new Set(["request_id", "user_id", "profile_id", "session_id", "input", "mode", "client_context"]);
 const CHAT_INPUT_KEYS = new Set(["type", "text"]);
@@ -50,7 +57,7 @@ const CLIENT_CONTEXT_KEYS = new Set(["timezone", "voice_enabled", "avatar_enable
 
 export interface CreateApiServerOptions {
   gateway?: AgentGateway;
-  gatewayFactory?: (apiKey: string) => AgentGateway;
+  gatewayFactory?: (apiKey: string, selection?: ProviderSelection) => AgentGateway;
   stateStore?: SqliteStateStore;
   characterStore?: LocalCharacterStore;
   localToken?: string;
@@ -213,9 +220,14 @@ function sanitizeSessionId(raw: string): string {
   return id;
 }
 
-function providerApiKey(req: IncomingMessage): string {
+function providerSelection(req: IncomingMessage): ProviderSelection {
+  const providerHeader = firstHeader(req.headers["x-liukong-provider"] ?? req.headers["x-flowsky-provider"]);
+  const providerName = normalizeProviderName(providerHeader);
   const headerKey = firstHeader(req.headers["x-liukong-api-key"] ?? req.headers["x-flowsky-api-key"]);
-  return (headerKey || process.env.DEEPSEEK_API_KEY || "").trim();
+  const envKey = providerName === "openai"
+    ? process.env.LIUKONG_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY
+    : process.env.DEEPSEEK_API_KEY;
+  return { providerName, apiKey: (headerKey || envKey || "").trim() };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -228,7 +240,7 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
 
 function statusForError(code: string): number {
   if (code === "request_body_too_large") return 413;
-  if (code === "bad_json" || code === "bad_request" || code === "bad_character_card" || code === "missing_provider_key") return 400;
+  if (code === "bad_json" || code === "bad_request" || code === "bad_character_card" || code === "missing_provider_key" || code === "bad_provider") return 400;
   return 500;
 }
 
@@ -259,11 +271,11 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
     return characterStore;
   }
 
-  function gatewayForChat(apiKey: string): AgentGateway {
+  function gatewayForChat(selection: ProviderSelection): AgentGateway {
     if (options.gateway) return options.gateway;
-    if (options.gatewayFactory) return options.gatewayFactory(apiKey);
+    if (options.gatewayFactory) return options.gatewayFactory(selection.apiKey, selection);
     if (!stateStore) return baseGateway;
-    return createDefaultAgentGateway({ apiKey, stateStore });
+    return createDefaultAgentGateway({ apiKey: selection.apiKey, providerName: selection.providerName, stateStore });
   }
 
   return createServer(async (req, res) => {
@@ -351,9 +363,9 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         const body = sanitizeChatRequest(await readJson<unknown>(req));
         const localAuth = auth(req, url, body);
         if (!localAuth) return writeUnauthorized(res);
-        const apiKey = providerApiKey(req);
-        if (!apiKey && !options.gateway) throw new Error("missing_provider_key");
-        const response = await gatewayForChat(apiKey).chat({ ...body, user_id: localAuth.profileId, profile_id: localAuth.profileId });
+        const selection = providerSelection(req);
+        if (!selection.apiKey && !options.gateway) throw new Error("missing_provider_key");
+        const response = await gatewayForChat(selection).chat({ ...body, user_id: localAuth.profileId, profile_id: localAuth.profileId });
         return json(res, 200, response);
       }
 
@@ -361,15 +373,15 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         const body = sanitizeChatRequest(await readJson<unknown>(req));
         const localAuth = auth(req, url, body);
         if (!localAuth) return writeUnauthorized(res);
-        const apiKey = providerApiKey(req);
-        if (!apiKey && !options.gateway) throw new Error("missing_provider_key");
+        const selection = providerSelection(req);
+        if (!selection.apiKey && !options.gateway) throw new Error("missing_provider_key");
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache, no-transform",
           connection: "keep-alive",
           "x-accel-buffering": "no",
         });
-        for await (const event of gatewayForChat(apiKey).stream({ ...body, user_id: localAuth.profileId, profile_id: localAuth.profileId })) sseWrite(res, event);
+        for await (const event of gatewayForChat(selection).stream({ ...body, user_id: localAuth.profileId, profile_id: localAuth.profileId })) sseWrite(res, event);
         return res.end();
       }
 
