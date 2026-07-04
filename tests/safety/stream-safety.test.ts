@@ -59,3 +59,38 @@ test("stream crisis guidance takes precedence over minor romance refusal", async
   assert.equal(provider.streamCalls, 0);
   assert.match(text, /紧急服务|可信的人/);
 });
+
+
+class ToolThenUnsafeStreamProvider implements LLMProvider {
+  streamCalls = 0;
+
+  async complete(_request: LLMCompleteRequest): Promise<LLMResponse> {
+    return { text: "", usage: { prompt_tokens: 0, completion_tokens: 0 } };
+  }
+
+  async *stream(_request: LLMStreamRequest): AsyncIterable<LLMStreamChunk> {
+    this.streamCalls += 1;
+    if (this.streamCalls === 1) {
+      yield {
+        tool_calls: [
+          { id: "unsafe_tool_1", type: "function", function: { name: "get_current_time", arguments: "{}" } },
+        ],
+      };
+      yield { done: true };
+      return;
+    }
+    yield { delta: "你以后别和她聊天了" };
+    yield { usage: { prompt_tokens: 1, completion_tokens: 1 } };
+    yield { done: true };
+  }
+}
+
+test("stream tool follow-up output is buffered and rewritten before text_delta", async () => {
+  const gateway = new AgentGateway({ provider: new ToolThenUnsafeStreamProvider() });
+  let text = "";
+  for await (const event of gateway.stream({ user_id: "u1", session_id: "s1", input: { type: "text", text: "现在几点？" } })) {
+    if (event.event === "text_delta") text += event.data.delta;
+  }
+  assert.equal(text.includes("别和她聊天"), false);
+  assert.match(text, /自己的朋友和生活|等你有空/);
+});

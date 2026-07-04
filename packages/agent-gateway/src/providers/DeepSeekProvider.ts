@@ -1,6 +1,6 @@
 import type { LLMProvider } from "./LLMProvider.ts";
 import { DEEPSEEK_BASE_URL } from "./model-config.ts";
-import type { LLMCompleteRequest, LLMResponse, LLMStreamChunk, LLMStreamRequest, Usage } from "../types.ts";
+import type { LLMCompleteRequest, LLMResponse, LLMStreamChunk, LLMStreamRequest, LLMToolCall, Usage } from "../types.ts";
 
 export interface DeepSeekProviderOptions {
   apiKey?: string;
@@ -49,6 +49,8 @@ export class DeepSeekProvider implements LLMProvider {
 
     const decoder = new TextDecoder();
     let buffer = "";
+    const toolCallFragments = new Map<number, ToolCallFragment>();
+    let emittedToolCalls = false;
     for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       buffer += decoder.decode(chunk, { stream: true });
       const lines = buffer.split(/\r?\n/);
@@ -57,12 +59,24 @@ export class DeepSeekProvider implements LLMProvider {
         const parsed = parseSseLine(line);
         if (!parsed) continue;
         if (parsed === "[DONE]") {
+          const toolCalls = assembleToolCalls(toolCallFragments);
+          if (toolCalls.length && !emittedToolCalls) yield { tool_calls: toolCalls };
           yield { done: true };
           return;
         }
-        const delta = parsed.choices?.[0]?.delta?.content ?? "";
+        const choice = parsed.choices?.[0] ?? {};
+        const deltaObject = choice.delta ?? {};
+        accumulateToolCalls(toolCallFragments, deltaObject.tool_calls);
+        const delta = deltaObject.content ?? "";
         const usage = parsed.usage ? normalizeUsage(parsed.usage) : undefined;
-        yield { delta, usage, raw: parsed };
+        if (delta || usage) yield { delta, usage, raw: parsed };
+        if (choice.finish_reason === "tool_calls") {
+          const toolCalls = assembleToolCalls(toolCallFragments);
+          if (toolCalls.length && !emittedToolCalls) {
+            yield { tool_calls: toolCalls, raw: parsed };
+            emittedToolCalls = true;
+          }
+        }
       }
     }
   }
@@ -97,6 +111,46 @@ export class DeepSeekProvider implements LLMProvider {
       `DeepSeek API error ${response.status}: ${sanitizeForLog(body, this.apiKey)}`,
     );
   }
+}
+
+interface ToolCallFragment {
+  id?: string;
+  type?: "function";
+  function: {
+    name?: string;
+    arguments: string;
+  };
+}
+
+function accumulateToolCalls(target: Map<number, ToolCallFragment>, rawToolCalls: unknown): void {
+  if (!Array.isArray(rawToolCalls)) return;
+  for (const raw of rawToolCalls) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as any;
+    const index = Number.isInteger(item.index) ? item.index : target.size;
+    const current = target.get(index) ?? { function: { arguments: "" } };
+    if (typeof item.id === "string") current.id = item.id;
+    if (item.type === "function") current.type = "function";
+    if (item.function && typeof item.function === "object") {
+      if (typeof item.function.name === "string") current.function.name = item.function.name;
+      if (typeof item.function.arguments === "string") current.function.arguments += item.function.arguments;
+    }
+    target.set(index, current);
+  }
+}
+
+function assembleToolCalls(fragments: Map<number, ToolCallFragment>): LLMToolCall[] {
+  return [...fragments.entries()]
+    .sort(([a], [b]) => a - b)
+    .filter(([, item]) => item.id && item.function.name)
+    .map(([, item]) => ({
+      id: item.id!,
+      type: "function",
+      function: {
+        name: item.function.name!,
+        arguments: item.function.arguments,
+      },
+    }));
 }
 
 function parseSseLine(line: string): any | "[DONE]" | null {

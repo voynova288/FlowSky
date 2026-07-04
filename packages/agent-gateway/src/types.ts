@@ -100,6 +100,7 @@ export interface LLMStreamChunk {
   delta?: string;
   done?: boolean;
   usage?: Usage;
+  tool_calls?: LLMToolCall[];
   raw?: unknown;
 }
 

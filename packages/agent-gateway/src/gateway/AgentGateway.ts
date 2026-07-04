@@ -9,7 +9,7 @@ import { InputSafetyGate } from "../safety/InputSafetyGate.ts";
 import { OutputSafetyGate } from "../safety/OutputSafetyGate.ts";
 import { RomanceRealismGate } from "../safety/RomanceRealismGate.ts";
 import { ToolRouter } from "../tools/ToolRouter.ts";
-import type { AgentResponse, ChatRequest, LLMMessage, LLMToolCall, RelationshipState, StoredMemory, StreamEvent, ToolCallRecord, Usage, UserSettings } from "../types.ts";
+import type { AgentResponse, ChatRequest, LLMMessage, LLMStreamChunk, LLMToolCall, RelationshipState, StoredMemory, StreamEvent, ToolCallRecord, Usage, UserSettings } from "../types.ts";
 import { approxUsageFromMessages, nowIso, randomId } from "../util.ts";
 import { inferAvatarSignal, StreamEventMapper } from "./StreamEventMapper.ts";
 
@@ -229,23 +229,50 @@ export class AgentGateway {
       current_user_input: request.input.text,
     });
     const modelConfig = modelConfigForMode(request.mode ?? "girlfriend_chat");
-    let fullText = "";
-    let usage: Usage = { prompt_tokens: 0, completion_tokens: 0 };
+    const toolRecords: ToolCallRecord[] = [];
     try {
       // Buffer provider tokens until output/romance gates pass. This trades a
       // little latency for preventing unsafe text from being streamed and then
       // retracted.
-      for await (const chunk of this.options.provider.stream({ ...modelConfig, messages, stream: true })) {
-        if (chunk.delta) {
-          tracker.markFirstToken();
-          fullText += chunk.delta;
-        }
-        if (chunk.usage) usage = chunk.usage;
+      const initial = await this.bufferProviderStream(
+        this.options.provider.stream({
+          ...modelConfig,
+          messages,
+          stream: true,
+          tools: this.toolRouter.definitions(),
+          tool_choice: "auto",
+        }),
+        tracker,
+        messages,
+      );
+      let finalText = initial.text || "我在呢。你慢慢说，我听着。";
+      let usage = initial.usage;
+      if (initial.toolCalls.length) {
+        const toolMessages = await this.executeToolCalls({
+          calls: initial.toolCalls,
+          requestId,
+          userId: request.user_id,
+        });
+        toolRecords.push(...toolMessages.records);
+        for (const record of toolMessages.records) this.conversationStore?.recordToolCall?.(record);
+        const followUpMessages: LLMMessage[] = [
+          ...messages,
+          { role: "assistant", content: initial.text, tool_calls: initial.toolCalls },
+          ...toolMessages.messages,
+        ];
+        const final = await this.bufferProviderStream(
+          this.options.provider.stream({
+            ...modelConfig,
+            messages: followUpMessages,
+            stream: true,
+            tool_choice: "none",
+          }),
+          tracker,
+          followUpMessages,
+        );
+        finalText = final.text || "我在呢。你慢慢说，我听着。";
+        usage = final.usage;
       }
-      if (usage.prompt_tokens === 0 && usage.completion_tokens === 0) {
-        usage = approxUsageFromMessages(JSON.stringify(messages), fullText);
-      }
-      let finalText = fullText || "我在呢。你慢慢说，我听着。";
       const romance = this.romanceGate.check(finalText, settings);
       const output = this.outputSafety.check(finalText);
       const finalSafety = mergeSafety(inputSafety, romance, output);
@@ -270,7 +297,7 @@ export class AgentGateway {
         thinking_type: modelConfig.thinking?.type,
         prompt_hash: promptHash(messages),
         retrieved_memory_ids: memories.map((m) => m.id),
-        tool_calls: [],
+        tool_calls: toolRecords.map((record) => record.id),
         first_token_latency: tracker.firstTokenLatencyMs(),
         total_latency: tracker.totalLatencyMs(),
         usage,
@@ -296,6 +323,28 @@ export class AgentGateway {
     } catch (error) {
       yield { event: "error", data: { code: "stream_failed", message: "stream failed" } };
     }
+  }
+
+  private async bufferProviderStream(
+    stream: AsyncIterable<LLMStreamChunk>,
+    tracker: LatencyTracker,
+    messages: LLMMessage[],
+  ): Promise<{ text: string; usage: Usage; toolCalls: LLMToolCall[] }> {
+    let text = "";
+    let usage: Usage = { prompt_tokens: 0, completion_tokens: 0 };
+    let toolCalls: LLMToolCall[] = [];
+    for await (const chunk of stream) {
+      if (chunk.delta) {
+        tracker.markFirstToken();
+        text += chunk.delta;
+      }
+      if (chunk.usage) usage = chunk.usage;
+      if (chunk.tool_calls?.length) toolCalls = chunk.tool_calls;
+    }
+    if (usage.prompt_tokens === 0 && usage.completion_tokens === 0) {
+      usage = approxUsageFromMessages(JSON.stringify(messages), text);
+    }
+    return { text, usage, toolCalls };
   }
 
   private async executeToolCalls(params: {

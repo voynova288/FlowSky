@@ -65,3 +65,45 @@ test("test_api_key_not_logged", () => {
   const redacted = sanitizeForLog("bad liveSecretToken_1234567890", "liveSecretToken_1234567890");
   assert.equal(redacted.includes("liveSecretToken"), false);
 });
+
+
+test("deepseek stream assembles fragmented tool calls", async () => {
+  const calls: any[] = [];
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_current_time","arguments":"{\\\"timezone\\\":"}}]}}]}\n\n'));
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\\"Asia/Tokyo\\\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+  const provider = new DeepSeekProvider({
+    apiKey: "test-secret",
+    fetchFn: async (_url, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return new Response(body, { status: 200 });
+    },
+  });
+  const chunks = [];
+  for await (const chunk of provider.stream({
+    model: "deepseek-v4-flash",
+    stream: true,
+    messages: [{ role: "user", content: "time" }],
+    tools: [{ type: "function", function: { name: "get_current_time", description: "time", parameters: { type: "object" } } }],
+    tool_choice: "auto",
+  })) {
+    chunks.push(chunk);
+  }
+  assert.equal(calls[0].stream, true);
+  assert.equal(calls[0].tool_choice, "auto");
+  assert.equal(calls[0].tools[0].function.name, "get_current_time");
+  const toolChunk = chunks.find((chunk) => chunk.tool_calls?.length);
+  assert.ok(toolChunk);
+  assert.deepEqual(toolChunk!.tool_calls![0], {
+    id: "call_1",
+    type: "function",
+    function: { name: "get_current_time", arguments: '{"timezone":"Asia/Tokyo"}' },
+  });
+  assert.equal(chunks.at(-1)?.done, true);
+});
