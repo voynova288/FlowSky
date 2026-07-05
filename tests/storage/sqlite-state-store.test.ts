@@ -21,13 +21,15 @@ test("sqlite migrations create expected schema versions", () => {
     store.close();
     const db = new DatabaseSync(dbPath);
     const rows = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: number }>;
-    assert.deepEqual(rows.map((row) => row.version), [1, 2, 3, 4]);
+    assert.deepEqual(rows.map((row) => row.version), [1, 2, 3, 4, 5]);
     const toolCalls = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'").get();
     assert.ok(toolCalls);
     const profiles = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='local_profiles'").get();
     assert.ok(profiles);
     const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
     assert.ok(sessionColumns.some((column) => column.name === "title"));
+    const emotionTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='emotional_states'").get();
+    assert.ok(emotionTable);
     db.close();
   });
 });
@@ -241,6 +243,36 @@ test("sqlite request logger writes audit rows without full prompt", () => {
   });
 });
 
+
+test("sqlite emotional state persists, exports, imports, and clears", () => {
+  withTempDb((sourcePath) => {
+    withTempDb((targetPath) => {
+      const source = new SqliteStateStore(sourcePath);
+      const emotionalState = {
+        mood: "anxious" as const,
+        intensity: 3,
+        valence: -2 as const,
+        support_need: "comfort" as const,
+        updated_at: new Date().toISOString(),
+        source_message_id: "msg_emotion",
+      };
+      source.saveEmotionalState("u1", emotionalState);
+      assert.deepEqual(source.getEmotionalState("u1"), emotionalState);
+      const exported = source.exportLocalData("u1") as any;
+      assert.equal(exported.emotional_state.mood, "anxious");
+
+      const target = new SqliteStateStore(targetPath);
+      const result = target.importLocalData("u2", exported);
+      assert.equal(result.counts.emotional_state, 1);
+      assert.equal(target.getEmotionalState("u2")?.support_need, "comfort");
+      target.clearLocalData("u2");
+      assert.equal(target.getEmotionalState("u2"), null);
+      assert.throws(() => target.saveEmotionalState("u2", { ...emotionalState, mood: "unknown" as any }), /bad_request/);
+      source.close();
+      target.close();
+    });
+  });
+});
 
 test("sqlite relationship state persists, exports, and clears", () => {
   withTempDb((dbPath) => {

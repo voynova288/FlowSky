@@ -1,3 +1,4 @@
+import { inferEmotionalState, shouldPersistEmotionalState } from "../emotion/EmotionTracker.ts";
 import { MemoryController } from "../memory/MemoryController.ts";
 import { RequestLogger } from "../observability/RequestLogger.ts";
 import { LatencyTracker } from "../observability/LatencyTracker.ts";
@@ -9,7 +10,7 @@ import { InputSafetyGate } from "../safety/InputSafetyGate.ts";
 import { OutputSafetyGate } from "../safety/OutputSafetyGate.ts";
 import { RomanceRealismGate } from "../safety/RomanceRealismGate.ts";
 import { ToolRouter } from "../tools/ToolRouter.ts";
-import type { AgentResponse, ChatRequest, LLMMessage, LLMStreamChunk, LLMToolCall, RelationshipState, StoredMemory, StreamEvent, ToolCallRecord, Usage, UserSettings } from "../types.ts";
+import type { AgentResponse, ChatRequest, EmotionalState, LLMMessage, LLMStreamChunk, LLMToolCall, RelationshipState, StoredMemory, StreamEvent, ToolCallRecord, Usage, UserSettings } from "../types.ts";
 import { approxUsageFromMessages, nowIso, randomId } from "../util.ts";
 import { inferAvatarSignal, StreamEventMapper } from "./StreamEventMapper.ts";
 
@@ -26,6 +27,8 @@ export interface ConversationStoreLike {
   }): void;
   recordToolCall?(record: ToolCallRecord): void;
   getRelationshipState?(userId: string): RelationshipState | null;
+  getEmotionalState?(userId: string): EmotionalState | null;
+  saveEmotionalState?(userId: string, emotionalState: EmotionalState): EmotionalState;
 }
 
 export interface AgentGatewayOptions {
@@ -63,6 +66,7 @@ export class AgentGateway {
     const tracker = new LatencyTracker();
     const requestId = request.request_id ?? randomId("req");
     const messageId = randomId("msg");
+    const userMessageId = randomId("msg");
     const mode = request.mode ?? "girlfriend_chat";
     const settings = this.toolRouter.settingsStore.get(request.user_id);
     const inputSafety = this.inputSafety.check(request.input.text);
@@ -72,8 +76,11 @@ export class AgentGateway {
 
     const memories = settings.memory_enabled ? this.memoryController.retrieve(request.user_id, request.input.text) : [];
     const recentHistory = this.conversationStore?.recentMessages?.(request.user_id, request.session_id, 12) ?? [];
+    const previousEmotionalState = this.conversationStore?.getEmotionalState?.(request.user_id) ?? null;
+    const emotionalState = inferEmotionalState(request.input.text, previousEmotionalState, userMessageId);
     const messages = this.promptAssembler.assemble({
       relationship_state: this.relationshipFor(request.user_id),
+      user_emotional_state: emotionalState,
       user_settings: settings,
       retrieved_memories: memories,
       recent_history: recentHistory,
@@ -116,7 +123,7 @@ export class AgentGateway {
     const memoryCandidates = await this.memoryController.processUserMessage({
       userId: request.user_id,
       message: request.input.text,
-      sourceMessageId: messageId,
+      sourceMessageId: userMessageId,
       settings,
     });
     const avatar = inferAvatarSignal(text);
@@ -134,8 +141,9 @@ export class AgentGateway {
       usage: llm.usage,
       safety_flags: finalSafety.flags,
     });
+    if (shouldPersistEmotionalState(emotionalState, previousEmotionalState)) this.conversationStore?.saveEmotionalState?.(request.user_id, emotionalState);
     this.conversationStore?.saveMessage?.({
-      id: randomId("msg"),
+      id: userMessageId,
       session_id: request.session_id,
       user_id: request.user_id,
       role: "user",
@@ -209,6 +217,7 @@ export class AgentGateway {
     const tracker = new LatencyTracker();
     const requestId = request.request_id ?? randomId("req");
     const messageId = randomId("msg");
+    const userMessageId = randomId("msg");
     const settings = this.toolRouter.settingsStore.get(request.user_id);
     const inputSafety = this.inputSafety.check(request.input.text);
     if (inputSafety.level === "blocked") {
@@ -222,8 +231,11 @@ export class AgentGateway {
 
     const memories = settings.memory_enabled ? this.memoryController.retrieve(request.user_id, request.input.text) : [];
     const recentHistory = this.conversationStore?.recentMessages?.(request.user_id, request.session_id, 12) ?? [];
+    const previousEmotionalState = this.conversationStore?.getEmotionalState?.(request.user_id) ?? null;
+    const emotionalState = inferEmotionalState(request.input.text, previousEmotionalState, userMessageId);
     const messages = this.promptAssembler.assemble({
       relationship_state: this.relationshipFor(request.user_id),
+      user_emotional_state: emotionalState,
       user_settings: settings,
       retrieved_memories: memories,
       recent_history: recentHistory,
@@ -286,7 +298,7 @@ export class AgentGateway {
       const candidates = await this.memoryController.processUserMessage({
         userId: request.user_id,
         message: request.input.text,
-        sourceMessageId: messageId,
+        sourceMessageId: userMessageId,
         settings,
       });
       for (const candidate of candidates) yield { event: "memory_candidate", data: candidate };
@@ -304,8 +316,9 @@ export class AgentGateway {
         usage,
         safety_flags: finalSafety.flags,
       });
+      if (shouldPersistEmotionalState(emotionalState, previousEmotionalState)) this.conversationStore?.saveEmotionalState?.(request.user_id, emotionalState);
       this.conversationStore?.saveMessage?.({
-        id: randomId("msg"),
+        id: userMessageId,
         session_id: request.session_id,
         user_id: request.user_id,
         role: "user",

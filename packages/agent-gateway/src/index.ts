@@ -12,6 +12,7 @@ export * from "./memory/MemoryController.ts";
 export * from "./memory/MemoryCandidateExtractor.ts";
 export * from "./memory/MemoryStore.ts";
 export * from "./memory/MemoryWriteGate.ts";
+export * from "./emotion/EmotionTracker.ts";
 export * from "./safety/InputSafetyGate.ts";
 export * from "./safety/OutputSafetyGate.ts";
 export * from "./safety/RomanceRealismGate.ts";

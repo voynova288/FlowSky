@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { defaultLocalDbPath, defaultLocalProfileId } from "../local/paths.ts";
 import { DatabaseSync } from "node:sqlite";
-import type { LLMMessage, LocalChatMessage, LocalDataExport, LocalDataImportResult, LocalSession, MemoryCandidate, MemoryType, RelationshipStage, RelationshipState, StoredMemory, ToolCallRecord, UserSettings } from "../types.ts";
+import type { EmotionalState, EmotionalSupportNeed, LLMMessage, LocalChatMessage, LocalDataExport, LocalDataImportResult, LocalSession, MemoryCandidate, MemoryType, RelationshipStage, RelationshipState, StoredMemory, ToolCallRecord, UserMood, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import type { MemoryStoreLike } from "../memory/MemoryStore.ts";
 import { DEFAULT_USER_SETTINGS, type SettingsStoreLike } from "../tools/tools/settings_tools.ts";
@@ -27,6 +27,8 @@ const MEMORY_TYPES = new Set<MemoryType>([
 ]);
 const MEMORY_SENSITIVITIES = new Set(["low", "medium", "high"]);
 const MESSAGE_ROLES = new Set(["user", "assistant", "tool", "system"]);
+const USER_MOODS = new Set<UserMood>(["neutral", "tired", "sad", "anxious", "happy", "angry", "lonely"]);
+const EMOTIONAL_SUPPORT_NEEDS = new Set<EmotionalSupportNeed>(["listening", "comfort", "encouragement", "celebration", "space"]);
 const USER_SETTING_KEYS = new Set<keyof UserSettings>([
   "memory_enabled",
   "proactive_enabled",
@@ -156,6 +158,21 @@ const MIGRATIONS = [
     sql: `
       ALTER TABLE sessions ADD COLUMN title TEXT;
       CREATE INDEX IF NOT EXISTS idx_messages_user_session_created ON messages(user_id, session_id, created_at);
+    `,
+  },
+  {
+    version: 5,
+    name: "emotional_state",
+    sql: `
+      CREATE TABLE IF NOT EXISTS emotional_states (
+        user_id TEXT PRIMARY KEY,
+        mood TEXT NOT NULL,
+        intensity INTEGER NOT NULL,
+        valence INTEGER NOT NULL,
+        support_need TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        source_message_id TEXT
+      );
     `,
   },
 ] as const;
@@ -457,6 +474,29 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     return next;
   }
 
+  getEmotionalState(userId: string): EmotionalState | null {
+    const row = this.db
+      .prepare("SELECT mood, intensity, valence, support_need, updated_at, source_message_id FROM emotional_states WHERE user_id = ?")
+      .get(userId) as any | undefined;
+    return row ? rowToEmotionalState(row) : null;
+  }
+
+  saveEmotionalState(userId: string, emotionalState: EmotionalState): EmotionalState {
+    const next = sanitizeEmotionalState(emotionalState);
+    this.db
+      .prepare(`INSERT INTO emotional_states (user_id, mood, intensity, valence, support_need, updated_at, source_message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          mood = excluded.mood,
+          intensity = excluded.intensity,
+          valence = excluded.valence,
+          support_need = excluded.support_need,
+          updated_at = excluded.updated_at,
+          source_message_id = excluded.source_message_id`)
+      .run(userId, next.mood, next.intensity, next.valence, next.support_need, next.updated_at, next.source_message_id ?? null);
+    return next;
+  }
+
   recordAudit(entry: RequestLogEntry): void {
     this.db
       .prepare(`INSERT INTO audit_logs (
@@ -494,6 +534,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
       .prepare("SELECT * FROM messages WHERE user_id = ? ORDER BY created_at ASC, rowid ASC")
       .all(userId) as any[]).map(rowToMessage);
     const relationship = this.getRelationshipState(userId);
+    const emotionalState = this.getEmotionalState(userId);
     const toolCalls = (this.db
       .prepare("SELECT * FROM tool_calls WHERE user_id = ? ORDER BY created_at DESC")
       .all(userId) as any[]).map(rowToToolCall);
@@ -510,6 +551,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
       sessions,
       messages,
       relationship,
+      emotional_state: emotionalState,
       tool_calls: toolCalls,
       local_audit_logs: auditLogs,
     };
@@ -595,6 +637,21 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
           .run(userId, data.relationship.stage, data.relationship.intimacy_level, data.relationship.trust_level, nowIso());
       }
 
+      if (data.emotional_state) {
+        this.db
+          .prepare(`INSERT INTO emotional_states (user_id, mood, intensity, valence, support_need, updated_at, source_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            userId,
+            data.emotional_state.mood,
+            data.emotional_state.intensity,
+            data.emotional_state.valence,
+            data.emotional_state.support_need,
+            data.emotional_state.updated_at,
+            data.emotional_state.source_message_id ?? null,
+          );
+      }
+
       for (const toolCall of data.tool_calls) {
         this.db
           .prepare(`INSERT INTO tool_calls (
@@ -623,6 +680,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
           sessions: seenSessions.size,
           messages: data.messages.length,
           relationship: data.relationship ? 1 : 0,
+          emotional_state: data.emotional_state ? 1 : 0,
           tool_calls: data.tool_calls.length,
         },
       };
@@ -669,6 +727,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
   private deleteLocalRows(userId: string): void {
     this.db.prepare("DELETE FROM tool_calls WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM relationship_states WHERE user_id = ?").run(userId);
+    this.db.prepare("DELETE FROM emotional_states WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM messages WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM memories WHERE user_id = ?").run(userId);
@@ -744,6 +803,32 @@ function sanitizeRelationshipState(relationship: RelationshipState): Relationshi
   return normalized;
 }
 
+function rowToEmotionalState(row: any): EmotionalState | null {
+  const mood = row.mood;
+  const supportNeed = row.support_need;
+  const intensity = Number(row.intensity);
+  const valence = Number(row.valence);
+  if (!USER_MOODS.has(mood)) return null;
+  if (!EMOTIONAL_SUPPORT_NEEDS.has(supportNeed)) return null;
+  if (!Number.isInteger(intensity) || intensity < 0 || intensity > 5) return null;
+  if (![-2, -1, 0, 1, 2].includes(valence)) return null;
+  if (typeof row.updated_at !== "string") return null;
+  return {
+    mood,
+    intensity,
+    valence: valence as EmotionalState["valence"],
+    support_need: supportNeed,
+    updated_at: row.updated_at,
+    source_message_id: row.source_message_id ?? undefined,
+  };
+}
+
+function sanitizeEmotionalState(emotionalState: EmotionalState): EmotionalState {
+  const normalized = rowToEmotionalState(emotionalState);
+  if (!normalized) throw new Error("bad_request");
+  return normalized;
+}
+
 function rowToMemory(row: any): StoredMemory {
   return {
     id: row.id,
@@ -807,6 +892,7 @@ interface SanitizedLocalDataImport {
   sessions: LocalSession[];
   messages: LocalChatMessage[];
   relationship: RelationshipState | null;
+  emotional_state: EmotionalState | null;
   tool_calls: ToolCallRecord[];
 }
 
@@ -818,6 +904,7 @@ function sanitizeLocalDataImport(raw: unknown): SanitizedLocalDataImport {
     sessions: sanitizeImportedArray(raw.sessions, sanitizeImportedSession),
     messages: sanitizeImportedArray(raw.messages, sanitizeImportedMessage),
     relationship: raw.relationship === undefined || raw.relationship === null ? null : sanitizeRelationshipState(raw.relationship as RelationshipState),
+    emotional_state: raw.emotional_state === undefined || raw.emotional_state === null ? null : sanitizeEmotionalState(raw.emotional_state as EmotionalState),
     tool_calls: sanitizeImportedArray(raw.tool_calls, sanitizeImportedToolCall),
   };
 }

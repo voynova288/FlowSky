@@ -79,6 +79,49 @@ function relationshipSystemMessage(request: any): string {
   return request.messages.find((message: any) => message.role === "system" && String(message.content).startsWith("关系状态："))?.content ?? "";
 }
 
+function emotionalSystemMessage(request: any): string {
+  return request.messages.find((message: any) => message.role === "system" && String(message.content).startsWith("当前情绪状态："))?.content ?? "";
+}
+
+test("gateway chat tracks user emotion in prompt and persists state", async () => {
+  const provider = new FakeProvider();
+  let saved: any = null;
+  const gateway = new AgentGateway({
+    provider,
+    conversationStore: {
+      getEmotionalState: () => null,
+      saveEmotionalState: (_userId, state) => {
+        saved = state;
+        return state;
+      },
+    },
+  });
+  await gateway.chat({ user_id: "u1", session_id: "s1", input: { type: "text", text: "我今天真的很焦虑" } });
+  const message = emotionalSystemMessage(provider.lastRequest);
+  assert.match(message, /anxious/);
+  assert.match(message, /comfort/);
+  assert.equal(saved.mood, "anxious");
+});
+
+test("gateway chat clears persisted emotion when user recovers", async () => {
+  const provider = new FakeProvider();
+  let current: any = { mood: "anxious", intensity: 3, valence: -2, support_need: "comfort", updated_at: new Date().toISOString() };
+  const gateway = new AgentGateway({
+    provider,
+    conversationStore: {
+      getEmotionalState: () => current,
+      saveEmotionalState: (_userId, state) => {
+        current = state;
+        return state;
+      },
+    },
+  });
+  await gateway.chat({ user_id: "u1", session_id: "s1", input: { type: "text", text: "我好多了，没事了" } });
+  const message = emotionalSystemMessage(provider.lastRequest);
+  assert.match(message, /neutral/);
+  assert.equal(current.mood, "neutral");
+});
+
 test("gateway chat uses persisted relationship state when available", async () => {
   const provider = new FakeProvider();
   const relationship: RelationshipState = { stage: "romantic_light", intimacy_level: 4, trust_level: 3 };
@@ -103,6 +146,25 @@ test("gateway chat falls back to default relationship state", async () => {
   assert.match(message, /friendly_romantic/);
   assert.match(message, /"intimacy_level":2/);
   assert.match(message, /"trust_level":2/);
+});
+
+test("gateway stream tracks and persists user emotion", async () => {
+  const provider = new FakeProvider();
+  let saved: any = null;
+  const gateway = new AgentGateway({
+    provider,
+    conversationStore: {
+      getEmotionalState: () => ({ mood: "sad", intensity: 2, valence: -2, support_need: "comfort", updated_at: new Date().toISOString() }),
+      saveEmotionalState: (_userId, state) => {
+        saved = state;
+        return state;
+      },
+    },
+  });
+  for await (const _event of gateway.stream({ user_id: "u1", session_id: "s1", input: { type: "text", text: "嗯嗯" } })) {}
+  const message = emotionalSystemMessage(provider.lastRequest);
+  assert.match(message, /sad/);
+  assert.equal(saved.mood, "sad");
 });
 
 test("gateway stream uses persisted relationship state when available", async () => {

@@ -132,10 +132,22 @@ export type RelationshipStage =
   | "romantic_light"
   | "romantic_stable";
 
+export type UserMood = "neutral" | "tired" | "sad" | "anxious" | "happy" | "angry" | "lonely";
+export type EmotionalSupportNeed = "listening" | "comfort" | "encouragement" | "celebration" | "space";
+
 export interface RelationshipState {
   stage: RelationshipStage;
   intimacy_level: number;
   trust_level: number;
+}
+
+export interface EmotionalState {
+  mood: UserMood;
+  intensity: number;
+  valence: -2 | -1 | 0 | 1 | 2;
+  support_need: EmotionalSupportNeed;
+  updated_at: string;
+  source_message_id?: string;
 }
 
 export interface UserSettings {
@@ -236,6 +248,7 @@ export interface LocalDataExport {
   sessions: LocalSession[];
   messages: LocalChatMessage[];
   relationship: RelationshipState | null;
+  emotional_state: EmotionalState | null;
   tool_calls: ToolCallRecord[];
   local_audit_logs: unknown[];
 }
@@ -250,6 +263,7 @@ export interface LocalDataImportResult {
     sessions: number;
     messages: number;
     relationship: number;
+    emotional_state: number;
     tool_calls: number;
   };
 }

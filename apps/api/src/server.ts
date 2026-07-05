@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   AgentGateway,
   createDefaultAgentGateway,
@@ -244,6 +246,13 @@ function providerRequiresApiKey(providerName: LLMProviderName): boolean {
   return providerName !== "ollama";
 }
 
+function importedCharacterCard(raw: unknown): CharacterCard | undefined {
+  if (!isObject(raw)) return undefined;
+  if ("character" in raw) return validateCharacterCard(raw.character);
+  if (isObject(raw.characters) && "default_girlfriend" in raw.characters) return validateCharacterCard(raw.characters.default_girlfriend);
+  return undefined;
+}
+
 function statusForError(code: string): number {
   if (code === "request_body_too_large") return 413;
   if (code === "bad_json" || code === "bad_request" || code === "bad_character_card" || code === "missing_provider_key" || code === "bad_provider") return 400;
@@ -395,15 +404,21 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         const localAuth = auth(req, url);
         if (!localAuth) return writeUnauthorized(res);
         if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
-        return json(res, 200, stateStore.exportLocalData(localAuth.profileId));
+        return json(res, 200, {
+          ...stateStore.exportLocalData(localAuth.profileId),
+          character: localCharacterStore().loadCharacter("default_girlfriend"),
+        });
       }
 
       if (req.method === "POST" && url.pathname === "/local/import") {
         const localAuth = auth(req, url);
         if (!localAuth) return writeUnauthorized(res);
         if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
-        const result = stateStore.importLocalData(localAuth.profileId, await readJson<unknown>(req));
-        return json(res, 200, { ok: true, ...result });
+        const body = await readJson<unknown>(req);
+        const character = importedCharacterCard(body);
+        const result = stateStore.importLocalData(localAuth.profileId, body);
+        if (character) localCharacterStore().saveCharacter("default_girlfriend", character);
+        return json(res, 200, { ok: true, ...result, character_imported: Boolean(character) });
       }
 
       if (req.method === "POST" && url.pathname === "/local/reset") {
@@ -412,6 +427,16 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
         stateStore.clearLocalData(localAuth.profileId);
         return json(res, 200, { ok: true });
+      }
+
+      if (req.method === "GET" && url.pathname === "/emotion") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        return json(res, 200, {
+          emotional_state: stateStore.getEmotionalState(localAuth.profileId),
+          relationship: stateStore.getRelationshipState(localAuth.profileId),
+        });
       }
 
       if (req.method === "GET" && url.pathname === "/memories") {
@@ -472,9 +497,9 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const port = Number(process.env.LIUKONG_PORT ?? process.env.PORT ?? 3000);
-  const host = process.env.LIUKONG_HOST ?? process.env.HOST ?? "127.0.0.1";
+  const host = process.env.LIUKONG_HOST ?? "127.0.0.1";
   const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
   const allowNonLoopback = process.env.LIUKONG_ALLOW_NON_LOOPBACK === "true";
   if (!loopback && !allowNonLoopback) {

@@ -1,11 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AgentGateway, createDefaultAgentGateway, LocalCharacterStore, SqliteStateStore } from "../../packages/agent-gateway/src/index.ts";
 import { createApiServer } from "../../apps/api/src/server.ts";
 import { FakeProvider } from "../helpers.ts";
+
+async function waitForUrl(url: string, timeoutMs = 6_000): Promise<boolean> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return true;
+    } catch {
+      // Not ready yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return false;
+}
 
 async function withServer<T>(fn: (baseUrl: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "liukong-api-"));
@@ -69,6 +84,36 @@ test("api health, web root, and chat routes", async () => {
     assert.equal(chat.status, 200);
     assert.match(body.text, /辛苦/);
   });
+});
+
+test("api server entrypoint runs from relative script path and ignores generic HOST", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "liukong-entrypoint-"));
+  const port = 32_000 + Math.floor(Math.random() * 10_000);
+  const child = spawn(process.execPath, ["--experimental-strip-types", "apps/api/src/server.ts"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOST: "0.0.0.0",
+      LIUKONG_DATA_DIR: dir,
+      LIUKONG_PORT: String(port),
+      LIUKONG_REQUIRE_LOCAL_TOKEN: "false",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += String(chunk); });
+  child.stderr.on("data", (chunk) => { output += String(chunk); });
+  try {
+    assert.equal(await waitForUrl(`http://127.0.0.1:${port}/health`), true, output);
+    const health = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal((await health.json()).ok, true);
+    assert.match(output, /127\.0\.0\.1/);
+    assert.doesNotMatch(output, /Refusing to bind non-loopback/);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("api stream route emits SSE", async () => {
@@ -155,6 +200,7 @@ test("api local import restores current profile data and rejects malformed impor
   await withStatefulServer(async (baseUrl, store) => {
     store.update("u1", { preferred_name: "旧名字" });
     store.saveMessage({ id: "old_message", session_id: "old-session", user_id: "u1", role: "user", content: "旧消息" });
+    const character = await (await fetch(`${baseUrl}/character?profile_id=u1`)).json();
     const now = new Date().toISOString();
     const payload = {
       exported_at: now,
@@ -180,7 +226,9 @@ test("api local import restores current profile data and rejects malformed impor
         { id: "msg_imported_ai", session_id: "imported-session", user_id: "other-profile", role: "assistant", content: "恢复好了", emotion: "gentle", avatar_action: "smile", created_at: now },
       ],
       relationship: { stage: "close", intimacy_level: 3, trust_level: 4 },
+      emotional_state: { mood: "anxious", intensity: 3, valence: -2, support_need: "comfort", updated_at: now, source_message_id: "msg_imported_user" },
       tool_calls: [{ id: "tool_imported", request_id: "req_imported", user_id: "other-profile", tool_name: "get_current_time", arguments_json: { timezone: "Asia/Shanghai" }, allowed: true, result_summary: "ok", created_at: now }],
+      character: { ...character.character, name: "恢复角色" },
       local_audit_logs: [{ request_id: "ignored_audit" }],
     };
 
@@ -194,6 +242,7 @@ test("api local import restores current profile data and rejects malformed impor
     assert.equal(importedBody.ok, true);
     assert.equal(importedBody.profile_id, "u1");
     assert.equal(importedBody.counts.messages, 2);
+    assert.equal(importedBody.character_imported, true);
     assert.equal(store.recentMessages("u1", "old-session").length, 0);
 
     const exported = await fetch(`${baseUrl}/local/export?profile_id=u1`);
@@ -204,8 +253,16 @@ test("api local import restores current profile data and rejects malformed impor
     assert.equal(exportedBody.sessions[0].id, "imported-session");
     assert.deepEqual(exportedBody.messages.map((message: any) => message.content), ["请恢复", "恢复好了"]);
     assert.equal(exportedBody.relationship.stage, "close");
+    assert.equal(exportedBody.emotional_state.mood, "anxious");
     assert.equal(exportedBody.tool_calls[0].user_id, "u1");
     assert.equal(exportedBody.local_audit_logs.length, 0);
+    assert.equal(exportedBody.character.name, "恢复角色");
+
+    const loadedCharacter = await (await fetch(`${baseUrl}/character?profile_id=u1`)).json();
+    assert.equal(loadedCharacter.character.name, "恢复角色");
+    const emotion = await (await fetch(`${baseUrl}/emotion?profile_id=u1`)).json();
+    assert.equal(emotion.emotional_state.mood, "anxious");
+    assert.equal(emotion.relationship.stage, "close");
 
     const malformed = await fetch(`${baseUrl}/local/import?profile_id=u1`, {
       method: "POST",
@@ -214,6 +271,14 @@ test("api local import restores current profile data and rejects malformed impor
     });
     assert.equal(malformed.status, 400);
     assert.deepEqual(await malformed.json(), { error: "bad_request" });
+
+    const badCharacter = await fetch(`${baseUrl}/local/import?profile_id=u1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ character: { ...loadedCharacter.character, boundaries: { ...loadedCharacter.character.boundaries, do_not_claim_to_be_human: false } } }),
+    });
+    assert.equal(badCharacter.status, 400);
+    assert.deepEqual(await badCharacter.json(), { error: "bad_character_card" });
   });
 });
 
@@ -302,6 +367,7 @@ test("web UI exposes avatar state panel and voice checkbox", () => {
   assert.match(rootHtml, /id="avatarEmotion"/);
   assert.match(rootHtml, /id="avatarAction"/);
   assert.match(rootHtml, /id="voiceStatus"/);
+  assert.match(rootHtml, /id="userMood"/);
   assert.match(rootHtml, /(?:id="voiceEnabled"\s+type="checkbox"|type="checkbox"\s+id="voiceEnabled")/);
 });
 
@@ -329,6 +395,7 @@ test("web UI exposes local data import controls", () => {
   assert.match(rootHtml, /function importData/);
   assert.match(rootHtml, /\/local\/import/);
   assert.match(rootHtml, /不会导入 API key 或 local token/);
+  assert.match(rootHtml, /角色卡已恢复/);
 });
 
 test("web UI exposes provider selector and provider-scoped BYOK storage", () => {

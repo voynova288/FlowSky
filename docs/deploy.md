@@ -11,7 +11,21 @@ npm run dev:api
 
 Open `http://127.0.0.1:3000/`.
 
-Default local state (SQLite includes settings, memories, sessions/messages, tool calls, and audit metadata; export/import works through the local web UI or `/local/export` + `/local/import`):
+For a desktop app-style window without adding Electron/Tauri dependencies:
+
+```bash
+npm run desktop
+```
+
+To install a launcher into the Linux application menu and the desktop folder when present:
+
+```bash
+npm run desktop:install
+```
+
+The launcher starts the same localhost server, then opens a Chromium/Chrome-compatible `--app=` window with a separate browser profile under `~/.liukong/desktop-browser-profile`.
+
+Default local state (SQLite includes settings, memories, lightweight emotional state, sessions/messages, tool calls, and audit metadata; export/import also includes the default character card and works through the local web UI or `/local/export` + `/local/import`):
 
 ```text
 ~/.liukong/liukong.db
@@ -24,6 +38,13 @@ For repo-local development state:
 ```bash
 LIUKONG_DATA_DIR=./.local npm run dev:api
 ```
+
+## Desktop launcher notes
+
+- The desktop launcher does not bundle secrets and does not change the local-first threat model.
+- It uses `LIUKONG_PORT`, `LIUKONG_HOST`, `LIUKONG_DATA_DIR`, and provider env vars exactly like `npm run dev:api`.
+- Set `LIUKONG_DESKTOP_BROWSER=/path/to/browser` if Chrome/Chromium is not auto-detected.
+- If no app-mode browser is found, it falls back to `xdg-open` / platform default browser.
 
 ## Docker
 

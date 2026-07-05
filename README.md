@@ -26,6 +26,13 @@ npm run dev:api
 http://127.0.0.1:3000/
 ```
 
+桌面 App 模式（Linux/Chrome/Chromium app window，仍然是本地 server + 本机数据）：
+
+```bash
+npm run desktop          # 启动本地 server 并打开独立 app 窗口
+npm run desktop:install  # 安装“流空 Liukong”到系统应用菜单；如果存在 ~/Desktop 或 ~/桌面，也会创建桌面图标
+```
+
 常用检查：
 
 ```bash
@@ -57,6 +64,8 @@ LIUKONG_DATA_DIR=./.local npm run dev:api
 
 ```text
 Browser/Desktop UI
+  ├── browser tab: http://127.0.0.1:3000/
+  └── desktop app-mode launcher: npm run desktop / desktop entry
   ↓ localhost + local token
 Local API Server
   ↓
@@ -91,13 +100,14 @@ DeepSeek 或 OpenAI API（用户自带 key）
 - `DELETE /sessions/:id?profile_id=default` — archive session
 - `GET /settings?profile_id=default`
 - `PATCH /settings?profile_id=default`
+- `GET /emotion?profile_id=default` — current lightweight local emotional state + relationship state
 - `GET /memories?profile_id=default`
 - `PATCH /memories/:id?profile_id=default`
 - `POST /memories/:id/confirm?profile_id=default`
 - `POST /memories/:id/reject?profile_id=default`
 - `DELETE /memories/:id?profile_id=default`
 - `GET /local/export?profile_id=default`
-- `POST /local/import?profile_id=default` — restore JSON export into current local profile
+- `POST /local/import?profile_id=default` — restore JSON export into current local profile; restores character card when present
 - `POST /local/reset?profile_id=default`
 
 ## 当前范围
@@ -106,11 +116,11 @@ DeepSeek 或 OpenAI API（用户自带 key）
 - AgentGateway：统一 `ChatRequest` / `AgentResponse`、streaming events、request_id、usage/latency/safety 记录
 - PromptAssembler：文件化 system/compliance/output policy、JSON 角色卡、关系状态、用户设置、记忆注入
 - MemoryController：记忆抽取、写入 gate、pending/confirm/reject/edit、检索、删除、敏感信息确认逻辑
-- SQLite 本地持久化：settings、memories、sessions/messages、relationship、tool_calls、local_audit_logs view
+- SQLite 本地持久化：settings、memories、sessions/messages、relationship、emotional_state、tool_calls、local_audit_logs view
 - Local token：默认保护 localhost API
 - 本地角色卡：首次启动复制默认角色卡到 `~/.liukong/characters/`，支持查看、编辑、恢复默认
-- 本地导出/导入/清空：JSON export + restore current profile + reset profile data
-- 最小 Web UI：聊天、session 管理、settings、character、memory、local export/reset
+- 本地导出/导入/清空：JSON export + restore current profile/settings/memories/sessions/tool calls/character card + reset profile data
+- 最小 Web UI / 桌面 app-mode launcher：聊天、session 管理、settings、character、memory、emotion 状态、local export/import/reset
 - CI / Docker / security notes
 
 ## 安全原则
@@ -126,6 +136,7 @@ DeepSeek 或 OpenAI API（用户自带 key）
 ```text
 apps/api/                         # 本地 API server
 apps/web/                         # 最小 Web UI
+apps/desktop/                     # 桌面图标资源
 packages/agent-gateway/src/       # LLM / Agent Gateway 核心
 tests/                            # node:test 单元测试
 ```

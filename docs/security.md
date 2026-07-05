@@ -27,14 +27,17 @@ This is not an account login. It is a localhost CSRF guard so unrelated websites
 
 The executable server defaults to `LIUKONG_HOST=127.0.0.1` and refuses non-loopback hosts unless `LIUKONG_ALLOW_NON_LOOPBACK=true` is explicitly set. Use that only inside trusted container/sandbox packaging and bind the host port to loopback when possible.
 
+The desktop launcher keeps the same localhost model: it starts the local API server and opens an app-mode browser window against `http://127.0.0.1:<port>/`. It does not embed provider API keys, local tokens, or database contents into the `.desktop` file.
+
 ## User data
 
 - Long-term memories are local SQLite rows.
+- Lightweight emotional state is stored locally as mood/intensity/support-need metadata, not raw emotional diary text.
 - Sensitive memories are stored as pending candidates only and require explicit confirmation.
 - Users can view, delete, export, import/restore, and reset local data.
-- Editable character cards are validated before saving; romance cards must remain adult-coded and must forbid claiming to be human or replacing real relationships.
+- Editable character cards are validated before saving or import; romance cards must remain adult-coded and must forbid claiming to be human or replacing real relationships.
 - Audit logs store prompt hashes, memory IDs, tool call IDs, usage and flags — not full prompts.
-- Local import restores only the currently authenticated profile; imported `profile_id` / `user_id` values are ignored and rewritten locally. API keys and local tokens are never part of import/export.
+- Local import restores only the currently authenticated profile; imported `profile_id` / `user_id` values are ignored and rewritten locally. API keys and local tokens are never part of import/export. Character-card import is limited to the validated default local card.
 
 ## Tools
 

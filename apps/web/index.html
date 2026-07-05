@@ -84,6 +84,7 @@
             <div>
               <div class="state-line"><span>情绪</span><strong id="avatarEmotion">neutral</strong></div>
               <div class="state-line"><span>动作</span><strong id="avatarAction">idle</strong></div>
+              <div class="state-line"><span>用户情绪</span><strong id="userMood">neutral</strong></div>
               <div class="meta" id="voiceStatus">语音关闭</div>
             </div>
           </div>
@@ -102,7 +103,7 @@
         </section>
         <section class="panel">
           <h2>本地数据</h2>
-          <div class="row stack"><label>导入会替换当前 profile 的本地 SQLite 数据，不会导入 API key 或 local token</label><input id="importDataFile" type="file" accept="application/json" /></div>
+          <div class="row stack"><label>导入会替换当前 profile 的本地 SQLite 数据，并可恢复角色卡；不会导入 API key 或 local token</label><input id="importDataFile" type="file" accept="application/json" /></div>
           <button class="secondary" id="exportData" type="button">导出 JSON</button>
           <button id="importData" type="button">导入 JSON</button>
           <button class="danger" id="resetData" type="button">清空本地数据</button>
@@ -113,7 +114,7 @@
       const boot = window.__LIUKONG_LOCAL__ || { localToken: '', profileId: 'default' };
       const $ = (id) => document.querySelector(id);
       const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
-      const providerName = $('#providerName'), apiKey = $('#apiKey'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), importDataFile = $('#importDataFile');
+      const providerName = $('#providerName'), apiKey = $('#apiKey'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), userMood = $('#userMood'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), importDataFile = $('#importDataFile');
       providerName.value = localStorage.getItem('liukong.provider_name') || 'deepseek';
       apiKey.value = sessionStorage.getItem(providerApiKeyStorageKey()) || '';
       function selectedProvider() { return providerName.value === 'openai' ? 'openai' : providerName.value === 'ollama' ? 'ollama' : 'deepseek'; }
@@ -207,6 +208,13 @@
         saveVoiceSetting();
         statusEl.textContent = '设置已保存到本机';
       }
+      async function loadEmotion() {
+        const res = await fetch('/emotion' + profileQuery(), { headers: headers() });
+        if (!res.ok) return;
+        const body = await res.json();
+        const state = body.emotional_state;
+        userMood.textContent = state ? `${state.mood}/${state.intensity}` : 'neutral';
+      }
       async function loadMemories() {
         const res = await fetch('/memories' + profileQuery(), { headers: headers() });
         const body = await res.json();
@@ -248,8 +256,8 @@
       async function confirmMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/confirm` + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
       async function rejectMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/reject` + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
       async function exportData() { const res = await fetch('/local/export' + profileQuery(), { headers: headers() }); const data = await res.json(); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `liukong-${profileId.value || 'default'}-export.json`; a.click(); URL.revokeObjectURL(a.href); }
-      async function importData() { const file = importDataFile.files && importDataFile.files[0]; if (!file) throw new Error('请选择要导入的 Liukong JSON 文件'); if (!confirm('导入会替换当前 profile 的本地设置、记忆、会话和工具记录。继续吗？')) return; const data = JSON.parse(await file.text()); const res = await fetch('/local/import' + profileQuery(), { method: 'POST', headers: headers(true), body: JSON.stringify(data) }); if (!res.ok) throw new Error('import failed: ' + res.status); const body = await res.json(); messages.innerHTML = ''; await loadSettings(); await loadMemories(); await loadSessions(); statusEl.textContent = `导入完成：${body.counts?.sessions || 0} 个会话，${body.counts?.messages || 0} 条消息`; }
-      async function resetData() { if (!confirm('确定清空当前 profile 的本地设置、记忆和日志吗？')) return; await fetch('/local/reset' + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); messages.innerHTML = ''; await loadSettings(); await loadMemories(); await loadSessions(); statusEl.textContent = '本地数据已清空'; }
+      async function importData() { const file = importDataFile.files && importDataFile.files[0]; if (!file) throw new Error('请选择要导入的 Liukong JSON 文件'); if (!confirm('导入会替换当前 profile 的本地设置、记忆、会话、工具记录，并在备份包含角色卡时恢复角色卡。继续吗？')) return; const data = JSON.parse(await file.text()); const res = await fetch('/local/import' + profileQuery(), { method: 'POST', headers: headers(true), body: JSON.stringify(data) }); if (!res.ok) throw new Error('import failed: ' + res.status); const body = await res.json(); messages.innerHTML = ''; await loadSettings(); await loadEmotion(); await loadMemories(); await loadSessions(); await loadCharacter(); statusEl.textContent = `导入完成：${body.counts?.sessions || 0} 个会话，${body.counts?.messages || 0} 条消息${body.character_imported ? '，角色卡已恢复' : ''}`; }
+      async function resetData() { if (!confirm('确定清空当前 profile 的本地设置、记忆和日志吗？')) return; await fetch('/local/reset' + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); messages.innerHTML = ''; await loadSettings(); await loadEmotion(); await loadMemories(); await loadSessions(); statusEl.textContent = '本地数据已清空'; }
       function showError(error) { statusEl.textContent = '错误：' + error.message; }
 
       form.addEventListener('submit', async (event) => {
@@ -261,11 +269,11 @@
           if (!res.ok) throw new Error('HTTP ' + res.status);
           const reader = res.body.getReader(), decoder = new TextDecoder(); let buffer = '';
           while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); buffer = parseSse(buffer, (name, data) => { if (name === 'text_delta') aiBox.textContent += data.delta; if (name === 'avatar_signal') updateAvatarState(data); if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选'; messages.scrollTop = messages.scrollHeight; }); }
-          speakFinalAssistantText(aiBox.textContent); statusEl.textContent = '就绪'; await loadMemories(); await loadSessions();
+          speakFinalAssistantText(aiBox.textContent); statusEl.textContent = '就绪'; await loadEmotion(); await loadMemories(); await loadSessions();
         } catch (error) { aiBox.textContent = '连接失败：' + error.message; statusEl.textContent = '错误'; }
         finally { send.disabled = false; input.focus(); }
       });
-      loadVoiceSetting(); loadSettings().catch(() => {}); loadMemories().catch(() => {}); loadCharacter().catch(() => {}); loadSessions().catch(() => {});
+      loadVoiceSetting(); loadSettings().catch(() => {}); loadEmotion().catch(() => {}); loadMemories().catch(() => {}); loadCharacter().catch(() => {}); loadSessions().catch(() => {});
     </script>
   </body>
 </html>
