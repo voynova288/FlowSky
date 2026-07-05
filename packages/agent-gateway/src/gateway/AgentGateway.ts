@@ -202,6 +202,13 @@ export class AgentGateway {
     return this.memoryController.updateMemory(userId, memoryId, patch);
   }
 
+  addManualMemory(
+    userId: string,
+    params: { content: string; memory_type: StoredMemory["memory_type"]; sensitivity?: StoredMemory["sensitivity"] },
+  ): StoredMemory {
+    return this.memoryController.addManualMemory(userId, params);
+  }
+
   getUserSettings(userId: string): UserSettings {
     return this.toolRouter.settingsStore.get(userId);
   }

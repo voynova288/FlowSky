@@ -17,6 +17,7 @@ import {
   normalizeProviderName,
   type LLMProviderName,
   type MemoryType,
+  type StoredMemory,
   type StreamEvent,
   type UserSettings,
 } from "../../../packages/agent-gateway/src/index.ts";
@@ -173,6 +174,61 @@ function sanitizeMemoryPatch(raw: unknown): { content?: string; memory_type?: Me
     patch.memory_type = raw.memory_type as MemoryType;
   }
   return patch;
+}
+
+function sanitizeManualMemoryBody(raw: unknown): { content: string; memory_type: MemoryType; sensitivity?: StoredMemory["sensitivity"] } {
+  if (!isObject(raw)) throw new Error("bad_request");
+  const allowed = new Set(["content", "memory_type", "sensitivity"]);
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) throw new Error("bad_request");
+  }
+  if (typeof raw.content !== "string" || raw.content.trim().length === 0 || raw.content.length > 2_000) throw new Error("bad_request");
+  let memoryType: MemoryType = "preference_memory";
+  if ("memory_type" in raw) {
+    if (typeof raw.memory_type !== "string" || !MEMORY_TYPES.has(raw.memory_type as MemoryType)) throw new Error("bad_request");
+    memoryType = raw.memory_type as MemoryType;
+  }
+  let sensitivity: StoredMemory["sensitivity"] | undefined;
+  if ("sensitivity" in raw) {
+    if (raw.sensitivity !== "low" && raw.sensitivity !== "medium" && raw.sensitivity !== "high") throw new Error("bad_request");
+    sensitivity = raw.sensitivity;
+  }
+  return { content: raw.content.trim(), memory_type: memoryType, sensitivity };
+}
+
+function filterMemoriesForQuery(memories: StoredMemory[], params: URLSearchParams): StoredMemory[] {
+  const query = (params.get("q") ?? "").trim().toLowerCase();
+  const type = params.get("type") ?? "all";
+  const status = params.get("status") ?? "all";
+  const limit = Math.max(1, Math.min(500, Number(params.get("limit") ?? 200) || 200));
+  if (type !== "all" && !MEMORY_TYPES.has(type as MemoryType)) throw new Error("bad_request");
+  if (!["all", "confirmed", "pending", "sensitive"].includes(status)) throw new Error("bad_request");
+  return memories
+    .filter((memory) => type === "all" || memory.memory_type === type)
+    .filter((memory) => status === "all" || memoryStatus(memory) === status || (status === "sensitive" && (memory.memory_type === "sensitive_memory" || memory.sensitivity === "high")))
+    .filter((memory) => !query || `${memory.content} ${memory.memory_type}`.toLowerCase().includes(query))
+    .slice(0, limit);
+}
+
+function memoryStatus(memory: StoredMemory): "confirmed" | "pending" | "sensitive" {
+  if (memory.memory_type === "sensitive_memory" || memory.sensitivity === "high") return "sensitive";
+  if (memory.should_store && memory.user_confirmed && !memory.needs_user_confirmation) return "confirmed";
+  return "pending";
+}
+
+function memorySummary(memories: StoredMemory[]): Record<string, unknown> {
+  const byType: Record<string, number> = {};
+  let confirmed = 0;
+  let pending = 0;
+  let sensitive = 0;
+  for (const memory of memories) {
+    byType[memory.memory_type] = (byType[memory.memory_type] ?? 0) + 1;
+    const status = memoryStatus(memory);
+    if (status === "confirmed") confirmed += 1;
+    else if (status === "sensitive") sensitive += 1;
+    else pending += 1;
+  }
+  return { total: memories.length, confirmed, pending, sensitive, by_type: byType };
 }
 
 function sanitizeSettingsPatch(raw: unknown): Partial<UserSettings> {
@@ -562,7 +618,18 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
       if (req.method === "GET" && url.pathname === "/memories") {
         const localAuth = auth(req, url);
         if (!localAuth) return writeUnauthorized(res);
-        return json(res, 200, { memories: baseGateway.listMemories(localAuth.profileId) });
+        const allMemories = baseGateway.listMemories(localAuth.profileId);
+        return json(res, 200, {
+          memories: filterMemoriesForQuery(allMemories, url.searchParams),
+          summary: memorySummary(allMemories),
+        });
+      }
+
+      if (req.method === "POST" && url.pathname === "/memories") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        const memory = baseGateway.addManualMemory(localAuth.profileId, sanitizeManualMemoryBody(await readJson<unknown>(req)));
+        return json(res, 201, { memory, summary: memorySummary(baseGateway.listMemories(localAuth.profileId)) });
       }
 
       const confirmMatch = url.pathname.match(/^\/memories\/([^/]+)\/(confirm|reject)$/);

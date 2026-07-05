@@ -80,6 +80,15 @@ test("test_memory_merge_updates_communication_style", async () => {
   assert.equal(memories[0].content, "用户喜欢短句回复。");
 });
 
+test("manual memory add is confirmed and deduped", () => {
+  const controller = new MemoryController();
+  const first = controller.addManualMemory("u1", { content: "用户喜欢短句回复。", memory_type: "preference_memory" });
+  const second = controller.addManualMemory("u1", { content: "用户喜欢短句回复。", memory_type: "preference_memory" });
+  assert.equal(first.id, second.id);
+  assert.equal(controller.list("u1").length, 1);
+  assert.equal(controller.list("u1")[0].user_confirmed, true);
+});
+
 test("test_temporary_sensitive_emotion_is_not_memory", async () => {
   const controller = new MemoryController();
   const candidates = await controller.processUserMessage({ userId: "u1", message: "我现在很焦虑。", sourceMessageId: "m1", settings });

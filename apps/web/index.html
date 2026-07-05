@@ -101,7 +101,14 @@
         </section>
         <section class="panel">
           <h2>记忆</h2>
+          <div class="row stack"><label>搜索本地长期记忆</label><input id="memorySearch" placeholder="搜索偏好、称呼、关系记忆…" /></div>
+          <div class="row"><label>类型</label><select id="memoryTypeFilter"><option value="all">全部</option><option value="profile_memory">身份/称呼</option><option value="preference_memory">偏好</option><option value="relationship_memory">关系</option><option value="episodic_memory">事件</option><option value="session_memory">会话</option><option value="sensitive_memory">敏感</option></select></div>
+          <div class="row"><label>状态</label><select id="memoryStatusFilter"><option value="all">全部</option><option value="confirmed">已确认</option><option value="pending">待确认</option><option value="sensitive">敏感</option></select></div>
+          <div class="row stack"><label>手动添加记忆（明确写入本机 SQLite）</label><textarea id="manualMemoryContent" rows="3" placeholder="例如：用户喜欢直接、简短的建议。"></textarea></div>
+          <div class="row"><label>手动记忆类型</label><select id="manualMemoryType"><option value="preference_memory">偏好</option><option value="profile_memory">身份/称呼</option><option value="relationship_memory">关系</option><option value="episodic_memory">事件</option><option value="session_memory">会话</option><option value="sensitive_memory">敏感</option></select></div>
+          <button id="addMemory" type="button">添加记忆</button>
           <button class="secondary" id="refreshMemories" type="button">刷新记忆</button>
+          <div class="meta" id="memorySummary">记忆未加载</div>
           <div id="memories"></div>
         </section>
         <section class="panel" id="timersPanel">
@@ -124,7 +131,7 @@
       const boot = window.__LIUKONG_LOCAL__ || { localToken: '', profileId: 'default' };
       const $ = (id) => document.querySelector(id);
       const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
-      const providerName = $('#providerName'), apiKey = $('#apiKey'), ollamaModel = $('#ollamaModel'), ollamaStatus = $('#ollamaStatus'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), userMood = $('#userMood'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), timersEl = $('#timers'), importDataFile = $('#importDataFile');
+      const providerName = $('#providerName'), apiKey = $('#apiKey'), ollamaModel = $('#ollamaModel'), ollamaStatus = $('#ollamaStatus'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), userMood = $('#userMood'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memorySearch = $('#memorySearch'), memoryTypeFilter = $('#memoryTypeFilter'), memoryStatusFilter = $('#memoryStatusFilter'), manualMemoryContent = $('#manualMemoryContent'), manualMemoryType = $('#manualMemoryType'), memorySummaryEl = $('#memorySummary'), memoriesEl = $('#memories'), timersEl = $('#timers'), importDataFile = $('#importDataFile');
       providerName.value = localStorage.getItem('liukong.provider_name') || 'deepseek';
       apiKey.value = sessionStorage.getItem(providerApiKeyStorageKey()) || '';
       function selectedProvider() { return providerName.value === 'openai' ? 'openai' : providerName.value === 'ollama' ? 'ollama' : 'deepseek'; }
@@ -164,6 +171,10 @@
       $('#newSession').onclick = () => newSession().catch(showError);
       $('#refreshSessions').onclick = () => loadSessions().catch(showError);
       $('#refreshMemories').onclick = () => loadMemories().catch(showError);
+      $('#addMemory').onclick = () => addMemory().catch(showError);
+      memorySearch.oninput = () => loadMemories().catch(() => {});
+      memoryTypeFilter.onchange = () => loadMemories().catch(showError);
+      memoryStatusFilter.onchange = () => loadMemories().catch(showError);
       $('#refreshTimers').onclick = () => loadTimers({ notify: true }).catch(showError);
       $('#enableNotifications').onclick = () => requestReminderNotifications().catch(showError);
       $('#loadCharacter').onclick = () => loadCharacter().catch(showError);
@@ -232,11 +243,33 @@
         const state = body.emotional_state;
         userMood.textContent = state ? `${state.mood}/${state.intensity}` : 'neutral';
       }
+      function memoryQuery() {
+        const params = new URLSearchParams(profileQuery().slice(1));
+        if (memorySearch.value.trim()) params.set('q', memorySearch.value.trim());
+        if (memoryTypeFilter.value !== 'all') params.set('type', memoryTypeFilter.value);
+        if (memoryStatusFilter.value !== 'all') params.set('status', memoryStatusFilter.value);
+        return '?' + params.toString();
+      }
       async function loadMemories() {
-        const res = await fetch('/memories' + profileQuery(), { headers: headers() });
+        const res = await fetch('/memories' + memoryQuery(), { headers: headers() });
         const body = await res.json();
         memoriesEl.innerHTML = '';
+        renderMemorySummary(body.summary, body.memories || []);
         for (const m of body.memories || []) renderMemory(m);
+      }
+      function renderMemorySummary(summary, visible) {
+        if (!summary) { memorySummaryEl.textContent = `显示 ${visible.length} 条记忆`; return; }
+        memorySummaryEl.textContent = `共 ${summary.total || 0} 条 · 已确认 ${summary.confirmed || 0} · 待确认 ${summary.pending || 0} · 敏感 ${summary.sensitive || 0} · 当前显示 ${visible.length}`;
+      }
+      async function addMemory() {
+        const content = manualMemoryContent.value.trim();
+        if (!content) throw new Error('请输入要保存的记忆内容');
+        if (manualMemoryType.value === 'sensitive_memory' && !confirm('这会把敏感记忆明确保存到本机 SQLite。确认继续？')) return;
+        const res = await fetch('/memories' + profileQuery(), { method: 'POST', headers: headers(true), body: JSON.stringify({ content, memory_type: manualMemoryType.value, sensitivity: manualMemoryType.value === 'sensitive_memory' ? 'high' : 'low' }) });
+        if (!res.ok) throw new Error('memory add failed: ' + res.status);
+        manualMemoryContent.value = '';
+        await loadMemories();
+        statusEl.textContent = '记忆已手动保存到本机';
       }
       async function loadTimers(options = {}) {
         const res = await fetch('/timers' + profileQuery(), { headers: headers() });
@@ -330,7 +363,7 @@
         const pending = !m.user_confirmed || m.needs_user_confirmation || !m.should_store;
         div.className = 'memory' + (pending ? ' pending' : '');
         const content = document.createElement('div'); content.textContent = String(m.content || '');
-        const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${String(m.memory_type || 'memory')} · ${String(m.sensitivity || 'low')}${pending ? ' · 待确认' : ''}`;
+        const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${String(m.memory_type || 'memory')} · ${String(m.sensitivity || 'low')}${pending ? ' · 待确认' : ' · 已确认'} · ${String(m.updated_at || m.created_at || '')}`;
         const actions = document.createElement('div'); actions.className = 'memory-actions';
         if (pending) actions.append(button('确认', () => confirmMemory(m.id)), button('拒绝', () => rejectMemory(m.id)));
         actions.append(button('编辑', () => editMemory(m.id, m.content, m.memory_type)), button('删除', () => rejectMemory(m.id), 'danger'));

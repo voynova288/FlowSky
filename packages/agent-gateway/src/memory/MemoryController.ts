@@ -78,4 +78,30 @@ export class MemoryController {
   ): StoredMemory | null {
     return this.store.updateMemory?.(userId, memoryId, patch) ?? null;
   }
+
+  addManualMemory(
+    userId: string,
+    params: { content: string; memory_type: StoredMemory["memory_type"]; sensitivity?: StoredMemory["sensitivity"] },
+  ): StoredMemory {
+    const sensitivity = params.sensitivity ?? (params.memory_type === "sensitive_memory" ? "high" : "low");
+    const candidate: MemoryCandidate = {
+      should_store: true,
+      memory_type: params.memory_type,
+      content: params.content,
+      confidence: 1,
+      sensitivity,
+      needs_user_confirmation: false,
+      source_message_id: "manual",
+    };
+    const merge = mergeMemoryCandidate(this.store.list(userId), candidate);
+    if (merge.action === "skip") return merge.target;
+    if (merge.action === "update" && this.store.updateMemory) {
+      const updated = this.store.updateMemory(userId, merge.target.id, {
+        content: merge.content,
+        memory_type: candidate.memory_type,
+      });
+      if (updated) return updated;
+    }
+    return this.store.save(userId, candidate, true);
+  }
 }

@@ -380,6 +380,17 @@ test("api settings and memory routes", async () => {
     const memories = await fetch(`${baseUrl}/memories?profile_id=u1`);
     const body = await memories.json();
     assert.equal(body.memories.length, 1);
+    assert.equal(body.summary.total, 1);
+
+    const manual = await fetch(`${baseUrl}/memories?profile_id=u1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "用户希望被称呼为小空。", memory_type: "profile_memory" }),
+    });
+    assert.equal(manual.status, 201);
+    assert.equal((await manual.json()).memory.user_confirmed, true);
+    const searched = await fetch(`${baseUrl}/memories?profile_id=u1&q=${encodeURIComponent("小空")}&type=profile_memory&status=confirmed`);
+    assert.equal((await searched.json()).memories.length, 1);
 
     const id = body.memories[0].id;
     const editedMemory = await fetch(`${baseUrl}/memories/${id}?profile_id=u1`, {
@@ -483,6 +494,18 @@ test("web UI exposes editable memory action", () => {
   assert.match(rootHtml, /async function editMemory/);
   assert.match(rootHtml, /编辑这条本地记忆/);
   assert.match(rootHtml, /method: 'PATCH'/);
+});
+
+test("web UI exposes memory search filters and manual add", () => {
+  const rootHtml = readFileSync("apps/web/index.html", "utf8");
+  assert.match(rootHtml, /id="memorySearch"/);
+  assert.match(rootHtml, /id="memoryTypeFilter"/);
+  assert.match(rootHtml, /id="memoryStatusFilter"/);
+  assert.match(rootHtml, /id="manualMemoryContent"/);
+  assert.match(rootHtml, /id="addMemory"/);
+  assert.match(rootHtml, /function memoryQuery/);
+  assert.match(rootHtml, /async function addMemory/);
+  assert.match(rootHtml, /\/memories' \+ profileQuery\(\)/);
 });
 
 test("web UI exposes reminder timer panel and browser notifications", () => {
