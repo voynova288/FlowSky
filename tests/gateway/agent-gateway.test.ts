@@ -35,6 +35,13 @@ test("test_request_id_created", async () => {
   assert.match(response.request_id, /^req_/);
 });
 
+test("gateway applies per-instance local model override", async () => {
+  const provider = new FakeProvider();
+  const gateway = new AgentGateway({ provider, modelProviderName: "ollama", modelOverride: "llama3.2" });
+  await gateway.chat({ user_id: "u1", session_id: "s1", input: { type: "text", text: "hi" } });
+  assert.equal(provider.lastRequest?.model, "llama3.2");
+});
+
 
 class CountingProvider extends FakeProvider {
   completeCalls = 0;

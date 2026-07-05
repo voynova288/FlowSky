@@ -100,7 +100,7 @@ DeepSeek 或 OpenAI API（用户自带 key）
 - `DELETE /sessions/:id?profile_id=default` — archive session
 - `GET /settings?profile_id=default`
 - `PATCH /settings?profile_id=default`
-- `GET /providers/ollama/status?profile_id=default` — local Ollama health/model list and `ollama pull` guidance; no provider API key required
+- `GET /providers/ollama/status?profile_id=default` — local Ollama health/model list and `ollama pull` guidance; no provider API key required. Chat requests may set `x-liukong-model` when `x-liukong-provider: ollama` to choose an installed local model for that request.
 - `GET /emotion?profile_id=default` — current lightweight local emotional state + relationship state
 - `GET /memories?profile_id=default`
 - `PATCH /memories/:id?profile_id=default`
@@ -113,7 +113,7 @@ DeepSeek 或 OpenAI API（用户自带 key）
 
 ## 当前范围
 
-- Provider：DeepSeek 默认，OpenAI 和本机 Ollama 可选；均走 OpenAI-compatible chat completions、stream、JSON output、tool calls、API key 脱敏；Ollama 可在 Web UI 中检测本机运行状态和已安装模型
+- Provider：DeepSeek 默认，OpenAI 和本机 Ollama 可选；均走 OpenAI-compatible chat completions、stream、JSON output、tool calls、API key 脱敏；Ollama 可在 Web UI 中检测本机运行状态、列出已安装模型并选择本次聊天模型
 - AgentGateway：统一 `ChatRequest` / `AgentResponse`、streaming events、request_id、usage/latency/safety 记录
 - PromptAssembler：文件化 system/compliance/output policy、JSON 角色卡、关系状态、用户设置、记忆注入
 - MemoryController：长期记忆抽取会整理为简短第三人称摘要（称呼、喜好、厌恶、陪伴方式、边界偏好），自动跳过重复记忆并按最新称呼/回复风格/同场景陪伴偏好覆盖旧记忆，写入 gate、pending/confirm/reject/edit、检索、删除、敏感信息确认逻辑

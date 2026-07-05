@@ -466,6 +466,12 @@ test("web UI exposes editable memory action", () => {
   assert.match(rootHtml, /method: 'PATCH'/);
 });
 
+test("web UI inline script remains syntactically valid", () => {
+  const rootHtml = readFileSync("apps/web/index.html", "utf8");
+  const script = rootHtml.match(/<script>([\s\S]*)<\/script>/)?.[1] ?? "";
+  assert.doesNotThrow(() => new Function(script));
+});
+
 test("web UI exposes provider selector and provider-scoped BYOK storage", () => {
   const rootHtml = readFileSync("apps/web/index.html", "utf8");
   assert.match(rootHtml, /id="providerName"/);
@@ -473,9 +479,12 @@ test("web UI exposes provider selector and provider-scoped BYOK storage", () => 
   assert.match(rootHtml, /<option value="openai">OpenAI<\/option>/);
   assert.match(rootHtml, /<option value="ollama">Ollama 本地<\/option>/);
   assert.match(rootHtml, /id="checkOllama"/);
+  assert.match(rootHtml, /id="ollamaModel"/);
   assert.match(rootHtml, /\/providers\/ollama\/status/);
   assert.match(rootHtml, /pull_command/);
   assert.match(rootHtml, /x-liukong-provider/);
+  assert.match(rootHtml, /x-liukong-model/);
+  assert.match(rootHtml, /liukong\.ollama_model/);
   assert.match(rootHtml, /liukong\.deepseek_api_key/);
   assert.match(rootHtml, /liukong\.openai_api_key/);
   assert.match(rootHtml, /liukong\.ollama_api_key/);

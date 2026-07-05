@@ -10,7 +10,7 @@ import { InputSafetyGate } from "../safety/InputSafetyGate.ts";
 import { OutputSafetyGate } from "../safety/OutputSafetyGate.ts";
 import { RomanceRealismGate } from "../safety/RomanceRealismGate.ts";
 import { ToolRouter } from "../tools/ToolRouter.ts";
-import type { AgentResponse, ChatRequest, EmotionalState, LLMMessage, LLMStreamChunk, LLMToolCall, RelationshipState, StoredMemory, StreamEvent, ToolCallRecord, Usage, UserSettings } from "../types.ts";
+import type { AgentResponse, ChatMode, ChatRequest, EmotionalState, LLMCompleteRequest, LLMMessage, LLMStreamChunk, LLMToolCall, RelationshipState, StoredMemory, StreamEvent, ToolCallRecord, Usage, UserSettings } from "../types.ts";
 import { approxUsageFromMessages, nowIso, randomId } from "../util.ts";
 import { inferAvatarSignal, StreamEventMapper } from "./StreamEventMapper.ts";
 
@@ -34,6 +34,7 @@ export interface ConversationStoreLike {
 export interface AgentGatewayOptions {
   provider: LLMProvider;
   modelProviderName?: LLMProviderName;
+  modelOverride?: string;
   promptAssembler?: PromptAssembler;
   memoryController?: MemoryController;
   toolRouter?: ToolRouter;
@@ -86,7 +87,7 @@ export class AgentGateway {
       recent_history: recentHistory,
       current_user_input: request.input.text,
     });
-    const modelConfig = modelConfigForMode(mode, this.options.modelProviderName ?? "deepseek");
+    const modelConfig = this.modelConfigFor(mode);
     const toolRecords: ToolCallRecord[] = [];
     let llm = await this.options.provider.complete({
       ...modelConfig,
@@ -241,7 +242,7 @@ export class AgentGateway {
       recent_history: recentHistory,
       current_user_input: request.input.text,
     });
-    const modelConfig = modelConfigForMode(request.mode ?? "girlfriend_chat", this.options.modelProviderName ?? "deepseek");
+    const modelConfig = this.modelConfigFor(request.mode ?? "girlfriend_chat");
     const toolRecords: ToolCallRecord[] = [];
     try {
       // Buffer provider tokens until output/romance gates pass. This trades a
@@ -341,6 +342,14 @@ export class AgentGateway {
 
   private relationshipFor(userId: string): RelationshipState {
     return this.conversationStore?.getRelationshipState?.(userId) ?? defaultRelationship();
+  }
+
+  private modelConfigFor(mode: ChatMode): Pick<
+    LLMCompleteRequest,
+    "model" | "temperature" | "thinking" | "reasoning_effort" | "response_format"
+  > {
+    const config = modelConfigForMode(mode, this.options.modelProviderName ?? "deepseek");
+    return this.options.modelOverride ? { ...config, model: this.options.modelOverride } : config;
   }
 
   private async bufferProviderStream(

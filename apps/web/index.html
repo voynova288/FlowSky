@@ -58,7 +58,7 @@
           <h2>模型密钥</h2>
           <div class="row"><label>模型 provider</label><select id="providerName"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="ollama">Ollama 本地</option></select></div>
           <div class="row stack"><label>Provider API key（可选；当前浏览器会话保存，留空则使用后端 .env.local/环境变量）</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
-          <div class="row stack"><label>Ollama 本地模型</label><button class="secondary" id="checkOllama" type="button">检测 Ollama</button><div class="meta" id="ollamaStatus">选择 Ollama 后可检测本机模型；默认地址 http://127.0.0.1:11434/v1</div></div>
+          <div class="row stack"><label>Ollama 本地模型</label><select id="ollamaModel"><option value="">使用后端默认模型</option></select><button class="secondary" id="checkOllama" type="button">检测 Ollama</button><div class="meta" id="ollamaStatus">选择 Ollama 后可检测本机模型；默认地址 http://127.0.0.1:11434/v1</div></div>
           <div class="row stack"><label>本地 profile</label><input id="profileId" value="default" /></div>
           <button class="secondary" id="saveClient" type="button">保存本地会话设置</button>
         </section>
@@ -115,7 +115,7 @@
       const boot = window.__LIUKONG_LOCAL__ || { localToken: '', profileId: 'default' };
       const $ = (id) => document.querySelector(id);
       const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
-      const providerName = $('#providerName'), apiKey = $('#apiKey'), ollamaStatus = $('#ollamaStatus'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), userMood = $('#userMood'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), importDataFile = $('#importDataFile');
+      const providerName = $('#providerName'), apiKey = $('#apiKey'), ollamaModel = $('#ollamaModel'), ollamaStatus = $('#ollamaStatus'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), userMood = $('#userMood'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), importDataFile = $('#importDataFile');
       providerName.value = localStorage.getItem('liukong.provider_name') || 'deepseek';
       apiKey.value = sessionStorage.getItem(providerApiKeyStorageKey()) || '';
       function selectedProvider() { return providerName.value === 'openai' ? 'openai' : providerName.value === 'ollama' ? 'ollama' : 'deepseek'; }
@@ -128,6 +128,7 @@
         h['x-liukong-local-token'] = boot.localToken || '';
         h['x-liukong-profile-id'] = profileId.value.trim() || 'default';
         h['x-liukong-provider'] = selectedProvider();
+        if (selectedProvider() === 'ollama' && ollamaModel.value.trim()) h['x-liukong-model'] = ollamaModel.value.trim();
         if (includeApiKey && apiKey.value.trim()) h['x-liukong-api-key'] = apiKey.value.trim();
         return h;
       }
@@ -140,14 +141,16 @@
       function cancelSpeech() { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); }
       function speakFinalAssistantText(text) { const finalText = String(text || '').trim(); if (!voiceEnabled.checked || !finalText) return; if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') { updateVoiceStatus('当前浏览器不支持'); return; } cancelSpeech(); const utterance = new SpeechSynthesisUtterance(finalText); utterance.lang = document.documentElement.lang || 'zh-CN'; utterance.onend = () => updateVoiceStatus('已读完'); utterance.onerror = () => updateVoiceStatus('朗读失败'); updateVoiceStatus('朗读中'); window.speechSynthesis.speak(utterance); }
       function updateAvatarState(data) { const emotion = String(data?.emotion || 'neutral'); const action = String(data?.action || 'idle'); avatarEmotion.textContent = emotion; avatarAction.textContent = action; avatarFace.textContent = ({ gentle: '🙂', caring: '🤍', playful: '😉', concerned: '🫧', neutral: '🙂' }[emotion] || '🙂'); if (avatarEnabled.checked) statusEl.textContent = `emotion=${emotion}, action=${action}`; }
-      async function checkOllamaStatus() { const res = await fetch('/providers/ollama/status' + profileQuery(), { headers: headers() }); if (!res.ok) throw new Error('Ollama status failed: ' + res.status); const body = await res.json(); const models = body.models || []; if (body.running && models.length) ollamaStatus.textContent = `Ollama 已运行；模型：${models.slice(0, 5).join(', ')}${models.length > 5 ? '…' : ''}；当前默认：${body.configured_model}${body.configured_model_available ? '' : '（未安装，执行 ' + body.pull_command + '）'}`; else if (body.running) ollamaStatus.textContent = `Ollama 已运行但没有模型；请执行 ${body.pull_command}`; else ollamaStatus.textContent = `未连接 Ollama；先运行 ollama serve，再执行 ${body.pull_command}`; }
+      function populateOllamaModels(models = [], configured = '') { const remembered = localStorage.getItem('liukong.ollama_model') || ''; const unique = [...new Set([configured, ...models].filter(Boolean))]; ollamaModel.innerHTML = '<option value="">使用后端默认模型' + (configured ? `：${configured}` : '') + '</option>'; for (const model of unique) { const option = document.createElement('option'); option.value = model; option.textContent = model; ollamaModel.appendChild(option); } if (remembered && unique.includes(remembered)) ollamaModel.value = remembered; }
+      async function checkOllamaStatus() { const res = await fetch('/providers/ollama/status' + profileQuery(), { headers: headers() }); if (!res.ok) throw new Error('Ollama status failed: ' + res.status); const body = await res.json(); const models = body.models || []; populateOllamaModels(models, body.configured_model || ''); if (body.running && models.length) ollamaStatus.textContent = `Ollama 已运行；模型：${models.slice(0, 5).join(', ')}${models.length > 5 ? '…' : ''}；当前默认：${body.configured_model}${body.configured_model_available ? '' : '（未安装，执行 ' + body.pull_command + '）'}`; else if (body.running) ollamaStatus.textContent = `Ollama 已运行但没有模型；请执行 ${body.pull_command}`; else ollamaStatus.textContent = `未连接 Ollama；先运行 ollama serve，再执行 ${body.pull_command}`; }
 
 
-      $('#saveClient').onclick = () => { localStorage.setItem('liukong.provider_name', selectedProvider()); localStorage.setItem('liukong.profile_id', profileId.value.trim() || 'default'); localStorage.setItem('liukong.session_id', sessionId.value.trim() || 'local-session'); sessionStorage.setItem(providerApiKeyStorageKey(), apiKey.value.trim()); saveVoiceSetting(); statusEl.textContent = '本地会话设置已保存；provider 选择保存在 localStorage，API key 仅保存到 sessionStorage'; };
+      $('#saveClient').onclick = () => { localStorage.setItem('liukong.provider_name', selectedProvider()); localStorage.setItem('liukong.profile_id', profileId.value.trim() || 'default'); localStorage.setItem('liukong.session_id', sessionId.value.trim() || 'local-session'); localStorage.setItem('liukong.ollama_model', ollamaModel.value.trim()); sessionStorage.setItem(providerApiKeyStorageKey(), apiKey.value.trim()); saveVoiceSetting(); statusEl.textContent = '本地会话设置已保存；provider/model 选择保存在 localStorage，API key 仅保存到 sessionStorage'; };
       $('#loadSettings').onclick = () => loadSettings().catch(showError);
       $('#saveSettings').onclick = () => saveSettings().catch(showError);
       voiceEnabled.onchange = () => { saveVoiceSetting(); if (!voiceEnabled.checked) cancelSpeech(); };
       providerName.onchange = () => { localStorage.setItem('liukong.provider_name', selectedProvider()); apiKey.value = sessionStorage.getItem(providerApiKeyStorageKey()) || ''; statusEl.textContent = `已切换 provider：${selectedProvider()}；留空 key 将使用后端环境变量`; if (selectedProvider() === 'ollama') checkOllamaStatus().catch(() => {}); };
+      ollamaModel.onchange = () => { localStorage.setItem('liukong.ollama_model', ollamaModel.value.trim()); };
       $('#checkOllama').onclick = () => checkOllamaStatus().catch(showError);
       $('#newSession').onclick = () => newSession().catch(showError);
       $('#refreshSessions').onclick = () => loadSessions().catch(showError);

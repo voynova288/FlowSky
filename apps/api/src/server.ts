@@ -52,6 +52,7 @@ type LocalChatRequestBody = Omit<ChatRequest, "user_id"> & Partial<Pick<ChatRequ
 export interface ProviderSelection {
   providerName: LLMProviderName;
   apiKey: string;
+  modelOverride?: string;
 }
 
 const CHAT_MODES = new Set(["girlfriend_chat", "girlfriend_complex", "memory_extraction", "safety_rewrite"]);
@@ -229,12 +230,22 @@ function providerSelection(req: IncomingMessage): ProviderSelection {
   const providerHeader = firstHeader(req.headers["x-liukong-provider"] ?? req.headers["x-flowsky-provider"]);
   const providerName = normalizeProviderName(providerHeader);
   const headerKey = firstHeader(req.headers["x-liukong-api-key"] ?? req.headers["x-flowsky-api-key"]);
+  const modelOverride = providerName === "ollama"
+    ? sanitizeModelOverride(firstHeader(req.headers["x-liukong-model"] ?? req.headers["x-liukong-ollama-model"]))
+    : undefined;
   const envKey = providerName === "openai"
     ? process.env.LIUKONG_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY
     : providerName === "ollama"
       ? process.env.LIUKONG_OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY
       : process.env.DEEPSEEK_API_KEY;
-  return { providerName, apiKey: (headerKey || envKey || "").trim() };
+  return { providerName, apiKey: (headerKey || envKey || "").trim(), modelOverride };
+}
+
+function sanitizeModelOverride(raw: string | undefined): string | undefined {
+  const model = raw?.trim();
+  if (!model) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,119}$/.test(model)) throw new Error("bad_request");
+  return model;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -365,7 +376,7 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
     if (options.gateway) return options.gateway;
     if (options.gatewayFactory) return options.gatewayFactory(selection.apiKey, selection);
     if (!stateStore) return baseGateway;
-    return createDefaultAgentGateway({ apiKey: selection.apiKey, providerName: selection.providerName, stateStore, fetchFn: options.fetchFn });
+    return createDefaultAgentGateway({ apiKey: selection.apiKey, providerName: selection.providerName, modelOverride: selection.modelOverride, stateStore, fetchFn: options.fetchFn });
   }
 
   return createServer(async (req, res) => {

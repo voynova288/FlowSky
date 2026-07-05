@@ -20,6 +20,7 @@ export interface DefaultAgentGatewayOptions {
   stateStore?: SqliteStateStore;
   provider?: LLMProvider;
   allowMissingApiKey?: boolean;
+  modelOverride?: string;
 }
 
 export interface ResolvedProviderConfig {
@@ -36,6 +37,7 @@ export function createDefaultAgentGateway(options: DefaultAgentGatewayOptions = 
   return new AgentGateway({
     provider,
     modelProviderName: providerName,
+    modelOverride: options.modelOverride,
     promptAssembler: new PromptAssembler({ characterStore }),
     memoryController: new MemoryController({ store: stateStore }),
     toolRouter: new ToolRouter(new ToolPermissionGate(), stateStore),

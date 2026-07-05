@@ -15,7 +15,7 @@ Liukong is designed as a local developer project, not a hosted multi-user cloud 
 - `DEEPSEEK_API_KEY` or `OPENAI_API_KEY` may be stored in local `.env.local` or typed into the UI as provider-scoped BYOK. Ollama usually needs no API key.
 - UI-entered BYOK keys are sent only to `localhost` chat endpoints and stored only in browser `sessionStorage`, keyed by selected provider. Provider choice is non-secret and may be stored in `localStorage`.
 - The backend must never write API keys to SQLite, audit logs, prompt hashes, or error bodies. Provider base URLs are server-side environment configuration in this minimal patch, not browser-supplied values.
-- Ollama health/model detection calls only the configured local Ollama endpoint and does not require or store a provider API key.
+- Ollama health/model detection calls only the configured local Ollama endpoint and does not require or store a provider API key. The optional `x-liukong-model` override is a sanitized local model name, not a browser-supplied base URL.
 - `npm run check:secrets` scans tracked files for common key patterns.
 
 ## Local token

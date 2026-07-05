@@ -240,8 +240,10 @@ test("server env OpenAI key is accepted when provider env selects openai", async
 test("provider header selects local Ollama without requiring api key", async () => {
   const token = "local-test-token";
   const stateStore = new SqliteStateStore(":memory:");
+  const provider = new FakeProvider();
   let seenKey = "unset";
   let seenProvider = "";
+  let seenModelOverride = "";
   const server = createApiServer({
     stateStore,
     localToken: token,
@@ -249,7 +251,8 @@ test("provider header selects local Ollama without requiring api key", async () 
     gatewayFactory: (apiKey, selection) => {
       seenKey = apiKey;
       seenProvider = selection?.providerName ?? "";
-      return new AgentGateway({ provider: new FakeProvider(), modelProviderName: selection?.providerName });
+      seenModelOverride = selection?.modelOverride ?? "";
+      return new AgentGateway({ provider, modelProviderName: selection?.providerName, modelOverride: selection?.modelOverride });
     },
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -259,17 +262,43 @@ test("provider header selects local Ollama without requiring api key", async () 
   try {
     const ok = await fetch(`${baseUrl}/chat`, {
       method: "POST",
-      headers: { "x-liukong-local-token": token, "x-liukong-provider": "ollama", "content-type": "application/json" },
+      headers: { "x-liukong-local-token": token, "x-liukong-provider": "ollama", "x-liukong-model": "llama3.2", "content-type": "application/json" },
       body: JSON.stringify({ profile_id: "default", session_id: "s1", input: { type: "text", text: "hi" } }),
     });
     assert.equal(ok.status, 200);
     assert.equal(seenKey, "");
     assert.equal(seenProvider, "ollama");
+    assert.equal(seenModelOverride, "llama3.2");
+    assert.equal(provider.lastRequest?.model, "llama3.2");
     assert.equal(JSON.stringify(await ok.json()).includes("api_key"), false);
     assert.equal(JSON.stringify(stateStore.auditEntries()).includes("api_key"), false);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
     stateStore.close();
+  }
+});
+
+test("invalid ollama model override returns bad_request", async () => {
+  const token = "local-test-token";
+  const server = createApiServer({
+    localToken: token,
+    requireLocalToken: true,
+    gatewayFactory: () => new AgentGateway({ provider: new FakeProvider() }),
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const baseUrl = `http://127.0.0.1:${address!.port}`;
+  try {
+    const response = await fetch(`${baseUrl}/chat`, {
+      method: "POST",
+      headers: { "x-liukong-local-token": token, "x-liukong-provider": "ollama", "x-liukong-model": "bad model with spaces", "content-type": "application/json" },
+      body: JSON.stringify({ profile_id: "default", session_id: "s1", input: { type: "text", text: "hi" } }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "bad_request" });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   }
 });
 
