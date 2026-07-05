@@ -29,9 +29,11 @@
       .panel { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.1); }
       .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin: 8px 0; }
       .row.stack { grid-template-columns: 1fr; }
-      .memory, .session { padding: 10px; border-radius: 12px; background: rgba(255,255,255,.08); margin: 9px 0; }
+      .memory, .session, .timer { padding: 10px; border-radius: 12px; background: rgba(255,255,255,.08); margin: 9px 0; }
       .session.active { outline: 1px solid #f0b6ff; }
       .memory.pending { outline: 1px solid #f0b6ff; }
+      .timer.fired { outline: 1px solid #8ea7ff; }
+      .timer.cancelled { opacity: .62; }
       .memory-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 8px; }
       .avatar-state { display: grid; grid-template-columns: 64px 1fr; gap: 12px; align-items: center; }
       .avatar-face { width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(145deg, #f0b6ff, #8ea7ff); color: #1c1024; font-size: 28px; box-shadow: 0 14px 40px rgba(240,182,255,.24); }
@@ -102,9 +104,16 @@
           <button class="secondary" id="refreshMemories" type="button">刷新记忆</button>
           <div id="memories"></div>
         </section>
+        <section class="panel" id="timersPanel">
+          <h2>提醒</h2>
+          <div class="meta">聊天里让 Mika “提醒我……” 会写入本地 SQLite；网页打开时轮询到期提醒。</div>
+          <div class="row"><label>浏览器通知</label><button class="secondary" id="enableNotifications" type="button">开启通知</button></div>
+          <button class="secondary" id="refreshTimers" type="button">刷新提醒</button>
+          <div id="timers"></div>
+        </section>
         <section class="panel">
           <h2>本地数据</h2>
-          <div class="row stack"><label>导入会替换当前 profile 的本地 SQLite 数据，并可恢复角色卡；不会导入 API key 或 local token</label><input id="importDataFile" type="file" accept="application/json" /></div>
+          <div class="row stack"><label>导入会替换当前 profile 的本地 SQLite 数据（含提醒），并可恢复角色卡；不会导入 API key 或 local token</label><input id="importDataFile" type="file" accept="application/json" /></div>
           <button class="secondary" id="exportData" type="button">导出 JSON</button>
           <button id="importData" type="button">导入 JSON</button>
           <button class="danger" id="resetData" type="button">清空本地数据</button>
@@ -115,7 +124,7 @@
       const boot = window.__LIUKONG_LOCAL__ || { localToken: '', profileId: 'default' };
       const $ = (id) => document.querySelector(id);
       const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
-      const providerName = $('#providerName'), apiKey = $('#apiKey'), ollamaModel = $('#ollamaModel'), ollamaStatus = $('#ollamaStatus'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), userMood = $('#userMood'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), importDataFile = $('#importDataFile');
+      const providerName = $('#providerName'), apiKey = $('#apiKey'), ollamaModel = $('#ollamaModel'), ollamaStatus = $('#ollamaStatus'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), userMood = $('#userMood'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), timersEl = $('#timers'), importDataFile = $('#importDataFile');
       providerName.value = localStorage.getItem('liukong.provider_name') || 'deepseek';
       apiKey.value = sessionStorage.getItem(providerApiKeyStorageKey()) || '';
       function selectedProvider() { return providerName.value === 'openai' ? 'openai' : providerName.value === 'ollama' ? 'ollama' : 'deepseek'; }
@@ -155,6 +164,8 @@
       $('#newSession').onclick = () => newSession().catch(showError);
       $('#refreshSessions').onclick = () => loadSessions().catch(showError);
       $('#refreshMemories').onclick = () => loadMemories().catch(showError);
+      $('#refreshTimers').onclick = () => loadTimers({ notify: true }).catch(showError);
+      $('#enableNotifications').onclick = () => requestReminderNotifications().catch(showError);
       $('#loadCharacter').onclick = () => loadCharacter().catch(showError);
       $('#saveCharacter').onclick = () => saveCharacter().catch(showError);
       $('#resetCharacter').onclick = () => resetCharacter().catch(showError);
@@ -227,6 +238,73 @@
         memoriesEl.innerHTML = '';
         for (const m of body.memories || []) renderMemory(m);
       }
+      async function loadTimers(options = {}) {
+        const res = await fetch('/timers' + profileQuery(), { headers: headers() });
+        if (!res.ok) return;
+        const body = await res.json();
+        const timers = body.timers || [];
+        timersEl.innerHTML = '';
+        for (const timer of timers) renderTimer(timer);
+        if (options.notify) notifyDueTimers(timers);
+      }
+      function renderTimer(timer) {
+        const div = document.createElement('div');
+        const status = String(timer.status || 'scheduled');
+        div.className = 'timer ' + status;
+        const title = document.createElement('div'); title.textContent = String(timer.label || 'timer');
+        const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = timerMeta(timer);
+        const actions = document.createElement('div'); actions.className = 'memory-actions';
+        if (status === 'scheduled') actions.append(button('取消', () => cancelTimer(timer.timer_id), 'danger'));
+        div.append(title, meta, actions); timersEl.append(div);
+      }
+      function timerMeta(timer) {
+        const status = String(timer.status || 'scheduled');
+        const fireAt = new Date(timer.fire_at);
+        const due = Number.isFinite(fireAt.getTime()) ? fireAt.toLocaleString() : String(timer.fire_at || '');
+        if (status === 'scheduled') return `待提醒 · ${due} · ${countdown(timer.fire_at)}`;
+        if (status === 'fired') return `已提醒 · ${timer.fired_at || timer.fire_at || ''}`;
+        return `已取消 · 原定 ${due}`;
+      }
+      function countdown(iso) {
+        const ms = Date.parse(iso) - Date.now();
+        if (!Number.isFinite(ms)) return '';
+        if (ms <= 0) return '即将刷新';
+        const minutes = Math.ceil(ms / 60000);
+        if (minutes < 60) return `${minutes} 分钟后`;
+        const hours = Math.floor(minutes / 60), rest = minutes % 60;
+        return `${hours} 小时${rest ? ' ' + rest + ' 分钟' : ''}后`;
+      }
+      async function cancelTimer(id) {
+        if (!confirm('取消这个本地提醒？')) return;
+        const res = await fetch(`/timers/${encodeURIComponent(id)}/cancel` + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' });
+        if (!res.ok) throw new Error('timer cancel failed: ' + res.status);
+        await loadTimers();
+      }
+      async function requestReminderNotifications() {
+        if (!('Notification' in window)) { statusEl.textContent = '当前浏览器不支持系统通知'; return; }
+        const permission = await Notification.requestPermission();
+        statusEl.textContent = permission === 'granted' ? '浏览器通知已开启' : '浏览器通知未开启，到期提醒会留在页面内';
+      }
+      function notifiedTimerIds() {
+        try { return new Set(JSON.parse(localStorage.getItem('liukong.notified_timers.' + (profileId.value.trim() || 'default')) || '[]')); }
+        catch { return new Set(); }
+      }
+      function saveNotifiedTimerIds(ids) {
+        localStorage.setItem('liukong.notified_timers.' + (profileId.value.trim() || 'default'), JSON.stringify([...ids].slice(-500)));
+      }
+      function notifyDueTimers(timers) {
+        const ids = notifiedTimerIds();
+        let changed = false;
+        for (const timer of timers) {
+          if (timer.status !== 'fired' || ids.has(timer.timer_id)) continue;
+          const firedAt = Date.parse(timer.fired_at || timer.fire_at || '');
+          if (Number.isFinite(firedAt) && Date.now() - firedAt > 12 * 3600 * 1000) { ids.add(timer.timer_id); changed = true; continue; }
+          ids.add(timer.timer_id); changed = true;
+          if ('Notification' in window && Notification.permission === 'granted') new Notification('流空提醒', { body: String(timer.label || 'timer'), tag: timer.timer_id });
+          else statusEl.textContent = `提醒到点：${String(timer.label || 'timer')}`;
+        }
+        if (changed) saveNotifiedTimerIds(ids);
+      }
       async function loadCharacter() {
         const res = await fetch('/character' + profileQuery(), { headers: headers() });
         if (!res.ok) throw new Error('character load failed: ' + res.status);
@@ -263,8 +341,8 @@
       async function editMemory(id, currentContent, currentType) { const content = prompt('编辑这条本地记忆：', String(currentContent || '')); if (content === null) return; const next = content.trim(); if (!next) return; await fetch(`/memories/${encodeURIComponent(id)}` + profileQuery(), { method: 'PATCH', headers: headers(true), body: JSON.stringify({ content: next, memory_type: currentType || 'preference_memory' }) }); await loadMemories(); }
       async function rejectMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/reject` + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
       async function exportData() { const res = await fetch('/local/export' + profileQuery(), { headers: headers() }); const data = await res.json(); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `liukong-${profileId.value || 'default'}-export.json`; a.click(); URL.revokeObjectURL(a.href); }
-      async function importData() { const file = importDataFile.files && importDataFile.files[0]; if (!file) throw new Error('请选择要导入的 Liukong JSON 文件'); if (!confirm('导入会替换当前 profile 的本地设置、记忆、会话、工具记录，并在备份包含角色卡时恢复角色卡。继续吗？')) return; const data = JSON.parse(await file.text()); const res = await fetch('/local/import' + profileQuery(), { method: 'POST', headers: headers(true), body: JSON.stringify(data) }); if (!res.ok) throw new Error('import failed: ' + res.status); const body = await res.json(); messages.innerHTML = ''; await loadSettings(); await loadEmotion(); await loadMemories(); await loadSessions(); await loadCharacter(); statusEl.textContent = `导入完成：${body.counts?.sessions || 0} 个会话，${body.counts?.messages || 0} 条消息${body.character_imported ? '，角色卡已恢复' : ''}`; }
-      async function resetData() { if (!confirm('确定清空当前 profile 的本地设置、记忆和日志吗？')) return; await fetch('/local/reset' + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); messages.innerHTML = ''; await loadSettings(); await loadEmotion(); await loadMemories(); await loadSessions(); statusEl.textContent = '本地数据已清空'; }
+      async function importData() { const file = importDataFile.files && importDataFile.files[0]; if (!file) throw new Error('请选择要导入的 Liukong JSON 文件'); if (!confirm('导入会替换当前 profile 的本地设置、记忆、会话、提醒、工具记录，并在备份包含角色卡时恢复角色卡。继续吗？')) return; const data = JSON.parse(await file.text()); const res = await fetch('/local/import' + profileQuery(), { method: 'POST', headers: headers(true), body: JSON.stringify(data) }); if (!res.ok) throw new Error('import failed: ' + res.status); const body = await res.json(); messages.innerHTML = ''; await loadSettings(); await loadEmotion(); await loadMemories(); await loadTimers(); await loadSessions(); await loadCharacter(); statusEl.textContent = `导入完成：${body.counts?.sessions || 0} 个会话，${body.counts?.messages || 0} 条消息，${body.counts?.timers || 0} 个提醒${body.character_imported ? '，角色卡已恢复' : ''}`; }
+      async function resetData() { if (!confirm('确定清空当前 profile 的本地设置、记忆、提醒和日志吗？')) return; await fetch('/local/reset' + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); messages.innerHTML = ''; await loadSettings(); await loadEmotion(); await loadMemories(); await loadTimers(); await loadSessions(); statusEl.textContent = '本地数据已清空'; }
       function showError(error) { statusEl.textContent = '错误：' + error.message; }
 
       form.addEventListener('submit', async (event) => {
@@ -276,11 +354,11 @@
           if (!res.ok) throw new Error('HTTP ' + res.status);
           const reader = res.body.getReader(), decoder = new TextDecoder(); let buffer = '';
           while (true) { const { done, value } = await reader.read(); if (done) break; buffer += decoder.decode(value, { stream: true }); buffer = parseSse(buffer, (name, data) => { if (name === 'text_delta') aiBox.textContent += data.delta; if (name === 'avatar_signal') updateAvatarState(data); if (name === 'memory_candidate') statusEl.textContent = '已生成记忆候选'; messages.scrollTop = messages.scrollHeight; }); }
-          speakFinalAssistantText(aiBox.textContent); statusEl.textContent = '就绪'; await loadEmotion(); await loadMemories(); await loadSessions();
+          speakFinalAssistantText(aiBox.textContent); statusEl.textContent = '就绪'; await loadEmotion(); await loadMemories(); await loadTimers(); await loadSessions();
         } catch (error) { aiBox.textContent = '连接失败：' + error.message; statusEl.textContent = '错误'; }
         finally { send.disabled = false; input.focus(); }
       });
-      loadVoiceSetting(); loadSettings().catch(() => {}); loadEmotion().catch(() => {}); loadMemories().catch(() => {}); loadCharacter().catch(() => {}); loadSessions().catch(() => {}); if (selectedProvider() === 'ollama') checkOllamaStatus().catch(() => {});
+      loadVoiceSetting(); loadSettings().catch(() => {}); loadEmotion().catch(() => {}); loadMemories().catch(() => {}); loadTimers({ notify: true }).catch(() => {}); loadCharacter().catch(() => {}); loadSessions().catch(() => {}); setInterval(() => loadTimers({ notify: true }).catch(() => {}), 30000); if (selectedProvider() === 'ollama') checkOllamaStatus().catch(() => {});
     </script>
   </body>
 </html>

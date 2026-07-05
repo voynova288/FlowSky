@@ -217,7 +217,7 @@ export interface SafetyResult {
   rewritten_text?: string | null;
 }
 
-export type LocalTimerState = "scheduled" | "fired";
+export type LocalTimerState = "scheduled" | "fired" | "cancelled";
 
 export interface LocalTimerStatus {
   timer_id: string;

@@ -11,6 +11,7 @@ export interface LocalTimerStoreLike {
   getLocalTimerStatus(userId: string, timerId: string): LocalTimerStatus | undefined;
   listLocalTimerStatuses(userId: string, limit?: number): LocalTimerStatus[];
   markLocalTimerFired?(userId: string, timerId: string, firedAt?: string): LocalTimerStatus | undefined;
+  cancelLocalTimer?(userId: string, timerId: string): LocalTimerStatus | undefined;
 }
 
 interface InternalTimerRecord extends LocalTimerStatus {

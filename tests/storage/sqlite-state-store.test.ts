@@ -85,13 +85,15 @@ test("sqlite local timers persist, fire, export, import, and clear", () => {
       const fired = reopened.markLocalTimerFired("u1", timer.timer_id)!;
       assert.equal(fired.status, "fired");
       assert.equal(typeof fired.fired_at, "string");
+      const secondTimer = reopened.createLocalTimer("u1", { seconds: 120, label: "休息" });
+      assert.equal(reopened.cancelLocalTimer("u1", secondTimer.timer_id)?.status, "cancelled");
       const exported = reopened.exportLocalData("u1") as any;
-      assert.equal(exported.timers.length, 1);
+      assert.equal(exported.timers.length, 2);
 
       const target = new SqliteStateStore(targetPath);
       const result = target.importLocalData("restored", exported);
-      assert.equal(result.counts.timers, 1);
-      assert.equal(target.listLocalTimerStatuses("restored")[0].label, "喝水");
+      assert.equal(result.counts.timers, 2);
+      assert.deepEqual(target.listLocalTimerStatuses("restored").map((item) => item.status).sort(), ["cancelled", "fired"]);
       target.clearLocalData("restored");
       assert.equal(target.listLocalTimerStatuses("restored").length, 0);
       reopened.close();

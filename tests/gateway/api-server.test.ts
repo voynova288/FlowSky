@@ -349,6 +349,9 @@ test("api timer routes list persisted local timers", async () => {
 
     const one = await fetch(`${baseUrl}/timers/${encodeURIComponent(timer.timer_id)}?profile_id=u1`);
     assert.equal((await one.json()).timer.timer_id, timer.timer_id);
+
+    const cancelled = await fetch(`${baseUrl}/timers/${encodeURIComponent(timer.timer_id)}/cancel?profile_id=u1`, { method: "POST" });
+    assert.equal((await cancelled.json()).timer.status, "cancelled");
   });
 });
 
@@ -480,6 +483,16 @@ test("web UI exposes editable memory action", () => {
   assert.match(rootHtml, /async function editMemory/);
   assert.match(rootHtml, /编辑这条本地记忆/);
   assert.match(rootHtml, /method: 'PATCH'/);
+});
+
+test("web UI exposes reminder timer panel and browser notifications", () => {
+  const rootHtml = readFileSync("apps/web/index.html", "utf8");
+  assert.match(rootHtml, /id="timersPanel"/);
+  assert.match(rootHtml, /id="enableNotifications"/);
+  assert.match(rootHtml, /function notifyDueTimers/);
+  assert.match(rootHtml, /Notification\.requestPermission/);
+  assert.match(rootHtml, /\/timers\/\$\{encodeURIComponent\(id\)\}\/cancel/);
+  assert.match(rootHtml, /setInterval\(\(\) => loadTimers\(\{ notify: true \}\)/);
 });
 
 test("web UI inline script remains syntactically valid", () => {

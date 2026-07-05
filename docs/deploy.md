@@ -25,7 +25,7 @@ npm run desktop:install
 
 The launcher starts the same localhost server, then opens a Chromium/Chrome-compatible `--app=` window with a separate browser profile under `~/.liukong/desktop-browser-profile`.
 
-Default local state (SQLite includes settings, memories, lightweight emotional state, sessions/messages, persisted reminder timers, tool calls, and audit metadata; export/import also includes the default character card and works through the local web UI or `/local/export` + `/local/import`):
+Default local state (SQLite includes settings, memories, lightweight emotional state, sessions/messages, persisted reminder timers, tool calls, and audit metadata; export/import also includes the default character card and works through the local web UI or `/local/export` + `/local/import`; reminder browser notifications work while the local web UI is open):
 
 ```text
 ~/.liukong/liukong.db

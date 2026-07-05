@@ -547,6 +547,18 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         return json(res, timer ? 200 : 404, timer ? { timer } : { error: "timer_not_found" });
       }
 
+      const timerCancelMatch = url.pathname.match(/^\/timers\/([^/]+)\/cancel$/);
+      if (req.method === "POST" && timerCancelMatch) {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        const timerId = decodeURIComponent(timerCancelMatch[1]);
+        const existing = stateStore.getLocalTimerStatus(localAuth.profileId, timerId);
+        if (!existing) return json(res, 404, { error: "timer_not_found" });
+        const timer = existing.status === "scheduled" ? stateStore.cancelLocalTimer(localAuth.profileId, timerId) : existing;
+        return json(res, 200, { timer });
+      }
+
       if (req.method === "GET" && url.pathname === "/memories") {
         const localAuth = auth(req, url);
         if (!localAuth) return writeUnauthorized(res);

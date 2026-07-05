@@ -554,6 +554,14 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     return this.getLocalTimerStatus(userId, timerId);
   }
 
+  cancelLocalTimer(userId: string, timerId: string): LocalTimerStatus | undefined {
+    this.markDueLocalTimersFired(userId);
+    this.db
+      .prepare("UPDATE local_timers SET status = 'cancelled' WHERE user_id = ? AND id = ? AND status = 'scheduled'")
+      .run(userId, timerId);
+    return this.getLocalTimerStatus(userId, timerId);
+  }
+
   markDueLocalTimersFired(userId: string, at = nowIso()): void {
     this.db
       .prepare("UPDATE local_timers SET status = 'fired', fired_at = COALESCE(fired_at, ?) WHERE user_id = ? AND status = 'scheduled' AND fire_at <= ?")
@@ -950,7 +958,7 @@ function rowToMessage(row: any): LocalChatMessage {
 }
 
 function rowToTimer(row: any): LocalTimerStatus {
-  const status = row.status === "fired" ? "fired" : "scheduled";
+  const status = row.status === "fired" ? "fired" : row.status === "cancelled" ? "cancelled" : "scheduled";
   return {
     timer_id: String(row.id ?? row.timer_id),
     label: String(row.label),
@@ -1096,7 +1104,7 @@ function sanitizeImportedMessage(raw: unknown): LocalChatMessage {
 
 function sanitizeImportedTimer(raw: unknown): LocalTimerStatus {
   if (!isPlainObject(raw)) throw new Error("bad_request");
-  const status = raw.status === "fired" ? "fired" : raw.status === "scheduled" ? "scheduled" : undefined;
+  const status = raw.status === "fired" ? "fired" : raw.status === "cancelled" ? "cancelled" : raw.status === "scheduled" ? "scheduled" : undefined;
   if (!status) throw new Error("bad_request");
   const timer: LocalTimerStatus = {
     timer_id: requiredString(raw.timer_id ?? raw.id, 120),
@@ -1107,7 +1115,7 @@ function sanitizeImportedTimer(raw: unknown): LocalTimerStatus {
     status,
     fired_at: optionalString(raw.fired_at, 80),
   };
-  if (timer.status === "scheduled") timer.fired_at = undefined;
+  if (timer.status !== "fired") timer.fired_at = undefined;
   return timer;
 }
 
