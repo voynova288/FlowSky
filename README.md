@@ -3,7 +3,7 @@
 流空是一个 **local-first / BYOK / 无账号** 的 AI companion / AI girlfriend 框架。
 
 - 无需注册，clone 后本地运行
-- 用户自带 DeepSeek / OpenAI API key，或连接本机 Ollama；也可用 `.env.local` 本地配置
+- 用户自带 DeepSeek / OpenAI API key，或连接本机 Ollama；也可用 `.env.local` / 本地 `API.txt` 配置
 - 聊天、记忆、设置、角色卡、日志默认保存在本机
 - 默认不上传遥测，不提供云同步
 - 默认绑定 `127.0.0.1`，不开放局域网访问
@@ -16,6 +16,7 @@ git clone git@github.com:voynova288/FlowSky.git
 cd FlowSky
 cp .env.example .env.local
 # 编辑 .env.local，填入 DEEPSEEK_API_KEY / OPENAI_API_KEY，或设置 LIUKONG_PROVIDER=ollama 连接本机 Ollama
+# 兼容旧本地密钥文件：也可把 DeepSeek key 单独放在项目根目录 API.txt（不会提交）
 # 也可以在网页里临时选择 provider 并填 BYOK key（Ollama 通常不需要 key）
 npm run dev:api
 ```
@@ -38,7 +39,7 @@ npm run desktop:install  # 安装“流空 Liukong”到系统应用菜单；如
 ```bash
 npm test
 npm run check:secrets
-npm run smoke:deepseek   # 仅 DeepSeek live smoke；读取 .env.local 或当前 shell 的 DEEPSEEK_API_KEY
+npm run smoke:deepseek   # 仅 DeepSeek live smoke；读取 .env.local / API.txt 或当前 shell 的 DEEPSEEK_API_KEY
 ```
 
 ## 本地数据
@@ -88,7 +89,7 @@ DeepSeek 或 OpenAI API（用户自带 key）
 
 - `GET /` — minimal local web UI
 - `GET /health`
-- `POST /chat` — DeepSeek/OpenAI 需要 `x-liukong-api-key` 或本机 `.env.local` 的 provider key；可用 `x-liukong-provider: deepseek|openai|ollama` 选择 provider，默认 deepseek；Ollama 默认走 `http://127.0.0.1:11434/v1` 且通常不需要 key
+- `POST /chat` — DeepSeek/OpenAI 需要 `x-liukong-api-key` 或本机 `.env.local`/环境变量 provider key；DeepSeek 还兼容项目根目录 `API.txt`；可用 `x-liukong-provider: deepseek|openai|ollama` 选择 provider，默认 deepseek；Ollama 默认走 `http://127.0.0.1:11434/v1` 且通常不需要 key
 - `POST /chat/stream` — SSE: `text_delta` / `avatar_signal` / `memory_candidate` / `done` / `error`
 - `GET /character?profile_id=default`
 - `PATCH /character?profile_id=default`

@@ -59,7 +59,7 @@
         <section class="panel">
           <h2>模型密钥</h2>
           <div class="row"><label>模型 provider</label><select id="providerName"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="ollama">Ollama 本地</option></select></div>
-          <div class="row stack"><label>Provider API key（可选；当前浏览器会话保存，留空则使用后端 .env.local/环境变量）</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
+          <div class="row stack"><label>Provider API key（可选；当前浏览器会话保存，留空则使用后端 .env.local/API.txt/环境变量）</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
           <div class="row stack"><label>Ollama 本地模型</label><select id="ollamaModel"><option value="">使用后端默认模型</option></select><button class="secondary" id="checkOllama" type="button">检测 Ollama</button><div class="meta" id="ollamaStatus">选择 Ollama 后可检测本机模型；默认地址 http://127.0.0.1:11434/v1</div></div>
           <div class="row stack"><label>本地 profile</label><input id="profileId" value="default" /></div>
           <button class="secondary" id="saveClient" type="button">保存本地会话设置</button>

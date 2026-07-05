@@ -5,7 +5,8 @@
 ```bash
 cp .env.example .env.local
 # edit .env.local and set DEEPSEEK_API_KEY / OPENAI_API_KEY,
-# or set LIUKONG_PROVIDER=ollama for local Ollama, or type a provider-scoped BYOK key in the UI
+# or keep a DeepSeek-only key in local API.txt, set LIUKONG_PROVIDER=ollama for local Ollama,
+# or type a provider-scoped BYOK key in the UI
 npm run dev:api
 ```
 

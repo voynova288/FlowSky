@@ -41,6 +41,8 @@ test("local token protects local profile APIs", async () => {
 });
 
 test("BYOK header is required and is passed only to chat gateway factory", async () => {
+  const previousDeepSeek = process.env.DEEPSEEK_API_KEY;
+  delete process.env.DEEPSEEK_API_KEY;
   const token = "local-test-token";
   const stateStore = new SqliteStateStore(":memory:");
   let seenKey = "";
@@ -77,6 +79,8 @@ test("BYOK header is required and is passed only to chat gateway factory", async
   } finally {
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
     stateStore.close();
+    if (previousDeepSeek === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousDeepSeek;
   }
 });
 
