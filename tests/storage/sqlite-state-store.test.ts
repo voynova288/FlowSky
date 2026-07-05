@@ -119,6 +119,102 @@ test("sqlite can export and clear local profile data", () => {
   });
 });
 
+test("sqlite can import exported local profile data into current profile", () => {
+  withTempDb((sourcePath) => {
+    withTempDb((targetPath) => {
+      const source = new SqliteStateStore(sourcePath);
+      source.update("source-profile", { preferred_name: "备份用户", memory_enabled: true, voice_enabled: true });
+      source.save("source-profile", {
+        should_store: true,
+        memory_type: "preference_memory",
+        content: "用户喜欢本地备份",
+        confidence: 0.8,
+        sensitivity: "low",
+        needs_user_confirmation: false,
+        source_message_id: "source_msg",
+      }, true);
+      source.createSession("source-profile", { id: "s1", title: "备份会话" });
+      source.saveMessage({ id: "msg_user", session_id: "s1", user_id: "source-profile", role: "user", content: "恢复我" });
+      source.saveMessage({ id: "msg_ai", session_id: "s1", user_id: "source-profile", role: "assistant", content: "已经恢复" });
+      source.saveRelationshipState("source-profile", { stage: "close", intimacy_level: 3, trust_level: 4 });
+      source.recordToolCall({
+        id: "tool_source",
+        request_id: "req_source",
+        user_id: "source-profile",
+        tool_name: "get_current_time",
+        arguments_json: { timezone: "Asia/Shanghai" },
+        allowed: true,
+        result_summary: "ok",
+        created_at: new Date().toISOString(),
+      });
+      const exported = source.exportLocalData("source-profile");
+
+      const target = new SqliteStateStore(targetPath);
+      target.update("target-profile", { preferred_name: "旧用户" });
+      target.saveMessage({ id: "old_msg", session_id: "old", user_id: "target-profile", role: "user", content: "旧数据" });
+      const result = target.importLocalData("target-profile", exported);
+
+      assert.equal(result.profile_id, "target-profile");
+      assert.equal(result.counts.memories, 1);
+      assert.equal(result.counts.sessions, 1);
+      assert.equal(result.counts.messages, 2);
+      assert.equal(result.counts.relationship, 1);
+      assert.equal(result.counts.tool_calls, 1);
+      assert.equal(target.get("target-profile").preferred_name, "备份用户");
+      assert.equal(target.list("target-profile")[0].user_id, "target-profile");
+      assert.equal(target.list("source-profile").length, 0);
+      assert.equal(target.listSessions("target-profile")[0].id, "s1");
+      assert.deepEqual(target.listSessionMessages("target-profile", "s1").map((m) => m.content), ["恢复我", "已经恢复"]);
+      assert.equal(target.recentMessages("target-profile", "old").length, 0);
+      assert.deepEqual(target.getRelationshipState("target-profile"), { stage: "close", intimacy_level: 3, trust_level: 4 });
+      const reexported = target.exportLocalData("target-profile") as any;
+      assert.equal(reexported.tool_calls[0].user_id, "target-profile");
+      assert.deepEqual(reexported.tool_calls[0].arguments_json, { timezone: "Asia/Shanghai" });
+
+      assert.throws(() => target.importLocalData("target-profile", { memories: "bad" }), /bad_request/);
+      source.close();
+      target.close();
+    });
+  });
+});
+
+test("sqlite import rejects global id collisions with other profiles", () => {
+  withTempDb((dbPath) => {
+    const store = new SqliteStateStore(dbPath);
+    const now = new Date().toISOString();
+    const payload = {
+      settings: { preferred_name: "冲突源" },
+      memories: [{
+        id: "mem_collision",
+        should_store: true,
+        memory_type: "preference_memory",
+        content: "B 的记忆",
+        confidence: 0.8,
+        sensitivity: "low",
+        needs_user_confirmation: false,
+        source_message_id: "msg_collision",
+        user_confirmed: true,
+        created_at: now,
+        updated_at: now,
+      }],
+      sessions: [{ id: "s-collision", title: "B 会话", created_at: now, updated_at: now, status: "active" }],
+      messages: [{ id: "msg_collision", session_id: "s-collision", role: "user", content: "B 的消息", created_at: now }],
+      tool_calls: [{ id: "tool_collision", request_id: "req_collision", tool_name: "get_current_time", arguments_json: {}, allowed: true, created_at: now }],
+    };
+
+    store.importLocalData("profile-b", payload);
+    assert.throws(() => store.importLocalData("profile-a", payload), /bad_request/);
+    assert.throws(() => store.importLocalData("profile-a", { ...payload, memories: [] }), /bad_request/);
+    assert.throws(() => store.importLocalData("profile-a", { ...payload, memories: [], messages: [] }), /bad_request/);
+    store.recordToolCall({ id: "tool_collision", request_id: "req_a", user_id: "profile-a", tool_name: "get_current_time", arguments_json: {}, allowed: true, created_at: now });
+    assert.equal(store.list("profile-b")[0].content, "B 的记忆");
+    assert.equal(store.listSessionMessages("profile-b", "s-collision")[0].content, "B 的消息");
+    assert.equal((store.exportLocalData("profile-b") as any).tool_calls[0].request_id, "req_collision");
+    assert.equal(store.list("profile-a").length, 0);
+    store.close();
+  });
+});
+
 test("sqlite request logger writes audit rows without full prompt", () => {
   withTempDb((dbPath) => {
     const store = new SqliteStateStore(dbPath);

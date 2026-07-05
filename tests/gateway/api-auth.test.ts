@@ -27,6 +27,13 @@ test("local token protects local profile APIs", async () => {
     const missing = await fetch(`${baseUrl}/settings?profile_id=default`);
     assert.equal(missing.status, 401);
 
+    const missingImport = await fetch(`${baseUrl}/local/import?profile_id=default`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(missingImport.status, 401);
+
     const ok = await fetch(`${baseUrl}/settings?profile_id=default`, { headers: { "x-liukong-local-token": token } });
     assert.equal(ok.status, 200);
     assert.equal((await ok.json()).memory_enabled, true);

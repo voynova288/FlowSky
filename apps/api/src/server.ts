@@ -392,6 +392,14 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         return json(res, 200, stateStore.exportLocalData(localAuth.profileId));
       }
 
+      if (req.method === "POST" && url.pathname === "/local/import") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        const result = stateStore.importLocalData(localAuth.profileId, await readJson<unknown>(req));
+        return json(res, 200, { ok: true, ...result });
+      }
+
       if (req.method === "POST" && url.pathname === "/local/reset") {
         const localAuth = auth(req, url);
         if (!localAuth) return writeUnauthorized(res);

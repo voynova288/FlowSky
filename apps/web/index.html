@@ -102,7 +102,9 @@
         </section>
         <section class="panel">
           <h2>本地数据</h2>
+          <div class="row stack"><label>导入会替换当前 profile 的本地 SQLite 数据，不会导入 API key 或 local token</label><input id="importDataFile" type="file" accept="application/json" /></div>
           <button class="secondary" id="exportData" type="button">导出 JSON</button>
+          <button id="importData" type="button">导入 JSON</button>
           <button class="danger" id="resetData" type="button">清空本地数据</button>
         </section>
       </aside>
@@ -111,7 +113,7 @@
       const boot = window.__LIUKONG_LOCAL__ || { localToken: '', profileId: 'default' };
       const $ = (id) => document.querySelector(id);
       const messages = $('#messages'), form = $('#chatForm'), input = $('#input'), send = $('#send'), statusEl = $('#status');
-      const providerName = $('#providerName'), apiKey = $('#apiKey'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories');
+      const providerName = $('#providerName'), apiKey = $('#apiKey'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), importDataFile = $('#importDataFile');
       providerName.value = localStorage.getItem('liukong.provider_name') || 'deepseek';
       apiKey.value = sessionStorage.getItem(providerApiKeyStorageKey()) || '';
       function selectedProvider() { return providerName.value === 'openai' ? 'openai' : 'deepseek'; }
@@ -150,6 +152,7 @@
       $('#saveCharacter').onclick = () => saveCharacter().catch(showError);
       $('#resetCharacter').onclick = () => resetCharacter().catch(showError);
       $('#exportData').onclick = () => exportData().catch(showError);
+      $('#importData').onclick = () => importData().catch(showError);
       $('#resetData').onclick = () => resetData().catch(showError);
 
       async function newSession() {
@@ -245,7 +248,8 @@
       async function confirmMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/confirm` + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
       async function rejectMemory(id) { await fetch(`/memories/${encodeURIComponent(id)}/reject` + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadMemories(); }
       async function exportData() { const res = await fetch('/local/export' + profileQuery(), { headers: headers() }); const data = await res.json(); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `liukong-${profileId.value || 'default'}-export.json`; a.click(); URL.revokeObjectURL(a.href); }
-      async function resetData() { if (!confirm('确定清空当前 profile 的本地设置、记忆和日志吗？')) return; await fetch('/local/reset' + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); await loadSettings(); await loadMemories(); statusEl.textContent = '本地数据已清空'; }
+      async function importData() { const file = importDataFile.files && importDataFile.files[0]; if (!file) throw new Error('请选择要导入的 Liukong JSON 文件'); if (!confirm('导入会替换当前 profile 的本地设置、记忆、会话和工具记录。继续吗？')) return; const data = JSON.parse(await file.text()); const res = await fetch('/local/import' + profileQuery(), { method: 'POST', headers: headers(true), body: JSON.stringify(data) }); if (!res.ok) throw new Error('import failed: ' + res.status); const body = await res.json(); messages.innerHTML = ''; await loadSettings(); await loadMemories(); await loadSessions(); statusEl.textContent = `导入完成：${body.counts?.sessions || 0} 个会话，${body.counts?.messages || 0} 条消息`; }
+      async function resetData() { if (!confirm('确定清空当前 profile 的本地设置、记忆和日志吗？')) return; await fetch('/local/reset' + profileQuery(), { method: 'POST', headers: headers(true), body: '{}' }); messages.innerHTML = ''; await loadSettings(); await loadMemories(); await loadSessions(); statusEl.textContent = '本地数据已清空'; }
       function showError(error) { statusEl.textContent = '错误：' + error.message; }
 
       form.addEventListener('submit', async (event) => {

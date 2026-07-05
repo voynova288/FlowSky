@@ -151,6 +151,72 @@ test("api session routes create, list, rename, load messages, and archive sessio
   });
 });
 
+test("api local import restores current profile data and rejects malformed imports", async () => {
+  await withStatefulServer(async (baseUrl, store) => {
+    store.update("u1", { preferred_name: "旧名字" });
+    store.saveMessage({ id: "old_message", session_id: "old-session", user_id: "u1", role: "user", content: "旧消息" });
+    const now = new Date().toISOString();
+    const payload = {
+      exported_at: now,
+      profile_id: "other-profile",
+      settings: { preferred_name: "恢复名字", memory_enabled: true, voice_enabled: true },
+      memories: [{
+        id: "mem_imported",
+        user_id: "other-profile",
+        should_store: true,
+        memory_type: "preference_memory",
+        content: "喜欢可恢复备份",
+        confidence: 0.9,
+        sensitivity: "low",
+        needs_user_confirmation: false,
+        source_message_id: "msg_imported_user",
+        user_confirmed: true,
+        created_at: now,
+        updated_at: now,
+      }],
+      sessions: [{ id: "imported-session", user_id: "other-profile", title: "导入会话", created_at: now, updated_at: now, status: "active", message_count: 2 }],
+      messages: [
+        { id: "msg_imported_user", session_id: "imported-session", user_id: "other-profile", role: "user", content: "请恢复", created_at: now },
+        { id: "msg_imported_ai", session_id: "imported-session", user_id: "other-profile", role: "assistant", content: "恢复好了", emotion: "gentle", avatar_action: "smile", created_at: now },
+      ],
+      relationship: { stage: "close", intimacy_level: 3, trust_level: 4 },
+      tool_calls: [{ id: "tool_imported", request_id: "req_imported", user_id: "other-profile", tool_name: "get_current_time", arguments_json: { timezone: "Asia/Shanghai" }, allowed: true, result_summary: "ok", created_at: now }],
+      local_audit_logs: [{ request_id: "ignored_audit" }],
+    };
+
+    const imported = await fetch(`${baseUrl}/local/import?profile_id=u1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(imported.status, 200);
+    const importedBody = await imported.json();
+    assert.equal(importedBody.ok, true);
+    assert.equal(importedBody.profile_id, "u1");
+    assert.equal(importedBody.counts.messages, 2);
+    assert.equal(store.recentMessages("u1", "old-session").length, 0);
+
+    const exported = await fetch(`${baseUrl}/local/export?profile_id=u1`);
+    const exportedBody = await exported.json();
+    assert.equal(exportedBody.profile_id, "u1");
+    assert.equal(exportedBody.settings.preferred_name, "恢复名字");
+    assert.equal(exportedBody.memories[0].user_id, "u1");
+    assert.equal(exportedBody.sessions[0].id, "imported-session");
+    assert.deepEqual(exportedBody.messages.map((message: any) => message.content), ["请恢复", "恢复好了"]);
+    assert.equal(exportedBody.relationship.stage, "close");
+    assert.equal(exportedBody.tool_calls[0].user_id, "u1");
+    assert.equal(exportedBody.local_audit_logs.length, 0);
+
+    const malformed = await fetch(`${baseUrl}/local/import?profile_id=u1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ memories: "bad" }),
+    });
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), { error: "bad_request" });
+  });
+});
+
 test("api settings and memory routes", async () => {
   await withServer(async (baseUrl) => {
     const settings = await fetch(`${baseUrl}/settings?profile_id=u1`, {
@@ -254,6 +320,15 @@ test("web UI speaks final assistant text through browser speechSynthesis only", 
   assert.match(rootHtml, /speechSynthesis\.speak/);
   assert.match(rootHtml, /speakFinalAssistantText\(aiBox\.textContent\)/);
   assert.doesNotMatch(rootHtml, /\/tts|elevenlabs|api\.openai\.com\/v1\/audio|speech\.googleapis|polly/i);
+});
+
+test("web UI exposes local data import controls", () => {
+  const rootHtml = readFileSync("apps/web/index.html", "utf8");
+  assert.match(rootHtml, /id="importDataFile"/);
+  assert.match(rootHtml, /id="importData"/);
+  assert.match(rootHtml, /function importData/);
+  assert.match(rootHtml, /\/local\/import/);
+  assert.match(rootHtml, /不会导入 API key 或 local token/);
 });
 
 test("web UI exposes provider selector and provider-scoped BYOK storage", () => {

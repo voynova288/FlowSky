@@ -31,9 +31,10 @@ The executable server defaults to `LIUKONG_HOST=127.0.0.1` and refuses non-loopb
 
 - Long-term memories are local SQLite rows.
 - Sensitive memories are stored as pending candidates only and require explicit confirmation.
-- Users can view, delete, export, and reset local data.
+- Users can view, delete, export, import/restore, and reset local data.
 - Editable character cards are validated before saving; romance cards must remain adult-coded and must forbid claiming to be human or replacing real relationships.
 - Audit logs store prompt hashes, memory IDs, tool call IDs, usage and flags — not full prompts.
+- Local import restores only the currently authenticated profile; imported `profile_id` / `user_id` values are ignored and rewritten locally. API keys and local tokens are never part of import/export.
 
 ## Tools
 

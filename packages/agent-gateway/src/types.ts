@@ -227,3 +227,29 @@ export interface ToolCallRecord {
   result_summary?: string;
   created_at: string;
 }
+
+export interface LocalDataExport {
+  exported_at: string;
+  profile_id: string;
+  settings: UserSettings;
+  memories: StoredMemory[];
+  sessions: LocalSession[];
+  messages: LocalChatMessage[];
+  relationship: RelationshipState | null;
+  tool_calls: ToolCallRecord[];
+  local_audit_logs: unknown[];
+}
+
+export interface LocalDataImportResult {
+  imported_at: string;
+  profile_id: string;
+  replaced: true;
+  counts: {
+    settings: number;
+    memories: number;
+    sessions: number;
+    messages: number;
+    relationship: number;
+    tool_calls: number;
+  };
+}

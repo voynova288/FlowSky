@@ -96,6 +96,7 @@ DeepSeek 或 OpenAI API（用户自带 key）
 - `POST /memories/:id/reject?profile_id=default`
 - `DELETE /memories/:id?profile_id=default`
 - `GET /local/export?profile_id=default`
+- `POST /local/import?profile_id=default` — restore JSON export into current local profile
 - `POST /local/reset?profile_id=default`
 
 ## 当前范围
@@ -107,7 +108,7 @@ DeepSeek 或 OpenAI API（用户自带 key）
 - SQLite 本地持久化：settings、memories、sessions/messages、relationship、tool_calls、local_audit_logs view
 - Local token：默认保护 localhost API
 - 本地角色卡：首次启动复制默认角色卡到 `~/.liukong/characters/`，支持查看、编辑、恢复默认
-- 本地导出/清空：JSON export + reset profile data
+- 本地导出/导入/清空：JSON export + restore current profile + reset profile data
 - 最小 Web UI：聊天、session 管理、settings、character、memory、local export/reset
 - CI / Docker / security notes
 

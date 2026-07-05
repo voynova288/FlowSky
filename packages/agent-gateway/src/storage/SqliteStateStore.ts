@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { defaultLocalDbPath, defaultLocalProfileId } from "../local/paths.ts";
 import { DatabaseSync } from "node:sqlite";
-import type { LLMMessage, LocalChatMessage, LocalSession, MemoryCandidate, RelationshipStage, RelationshipState, StoredMemory, ToolCallRecord, UserSettings } from "../types.ts";
+import type { LLMMessage, LocalChatMessage, LocalDataExport, LocalDataImportResult, LocalSession, MemoryCandidate, MemoryType, RelationshipStage, RelationshipState, StoredMemory, ToolCallRecord, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import type { MemoryStoreLike } from "../memory/MemoryStore.ts";
 import { DEFAULT_USER_SETTINGS, type SettingsStoreLike } from "../tools/tools/settings_tools.ts";
@@ -15,6 +15,27 @@ const RELATIONSHIP_STAGES = new Set<RelationshipStage>([
   "friendly_romantic",
   "romantic_light",
   "romantic_stable",
+]);
+
+const MEMORY_TYPES = new Set<MemoryType>([
+  "session_memory",
+  "profile_memory",
+  "preference_memory",
+  "episodic_memory",
+  "relationship_memory",
+  "sensitive_memory",
+]);
+const MEMORY_SENSITIVITIES = new Set(["low", "medium", "high"]);
+const MESSAGE_ROLES = new Set(["user", "assistant", "tool", "system"]);
+const USER_SETTING_KEYS = new Set<keyof UserSettings>([
+  "memory_enabled",
+  "proactive_enabled",
+  "romance_realism_level",
+  "voice_enabled",
+  "avatar_enabled",
+  "preferred_name",
+  "quiet_hours",
+  "adult_romance_enabled",
 ]);
 
 const MIGRATIONS = [
@@ -267,7 +288,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
 
   recordToolCall(record: ToolCallRecord): void {
     this.db
-      .prepare(`INSERT OR REPLACE INTO tool_calls (
+      .prepare(`INSERT OR IGNORE INTO tool_calls (
         id, request_id, user_id, tool_name, arguments_json, allowed, result_summary, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
@@ -465,7 +486,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     return this.db.prepare("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?").all(limit);
   }
 
-  exportLocalData(userId = defaultLocalProfileId()): unknown {
+  exportLocalData(userId = defaultLocalProfileId()): LocalDataExport {
     const settings = this.get(userId);
     const memories = this.list(userId);
     const sessions = this.listSessions(userId, 500, true);
@@ -473,7 +494,9 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
       .prepare("SELECT * FROM messages WHERE user_id = ? ORDER BY created_at ASC, rowid ASC")
       .all(userId) as any[]).map(rowToMessage);
     const relationship = this.getRelationshipState(userId);
-    const toolCalls = this.db.prepare("SELECT * FROM tool_calls WHERE user_id = ? ORDER BY created_at DESC").all(userId);
+    const toolCalls = (this.db
+      .prepare("SELECT * FROM tool_calls WHERE user_id = ? ORDER BY created_at DESC")
+      .all(userId) as any[]).map(rowToToolCall);
     const auditLogs = this.db
       .prepare(`SELECT request_id, model, thinking_type, first_token_latency, total_latency,
         usage_json, safety_flags_json, error_code, created_at
@@ -492,24 +515,185 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     };
   }
 
+  importLocalData(userId = defaultLocalProfileId(), raw: unknown): LocalDataImportResult {
+    const data = sanitizeLocalDataImport(raw);
+    this.assertImportedDataSafe(userId, data);
+    this.db.exec("BEGIN");
+    try {
+      this.deleteLocalRows(userId);
+      this.ensureLocalProfile(userId);
+      if (data.settings) {
+        this.db
+          .prepare(`INSERT INTO user_settings (user_id, settings_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at`)
+          .run(userId, JSON.stringify(data.settings), nowIso());
+      }
+
+      for (const memory of data.memories) {
+        this.db
+          .prepare(`INSERT INTO memories (
+            id, user_id, memory_type, content, confidence, sensitivity,
+            source_message_id, user_confirmed, should_store, needs_user_confirmation,
+            created_at, updated_at, deleted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            memory.id,
+            userId,
+            memory.memory_type,
+            memory.content,
+            memory.confidence,
+            memory.sensitivity,
+            memory.source_message_id,
+            memory.user_confirmed ? 1 : 0,
+            memory.should_store ? 1 : 0,
+            memory.needs_user_confirmation ? 1 : 0,
+            memory.created_at,
+            memory.updated_at,
+            memory.deleted_at ?? null,
+          );
+      }
+
+      const seenSessions = new Set<string>();
+      for (const session of data.sessions) {
+        this.insertImportedSession(userId, session);
+        seenSessions.add(session.id);
+      }
+
+      for (const message of data.messages) {
+        if (!seenSessions.has(message.session_id)) {
+          this.insertImportedSession(userId, {
+            id: message.session_id,
+            user_id: userId,
+            title: message.role === "user" ? sanitizeTitle(message.content) : undefined,
+            created_at: message.created_at,
+            updated_at: message.created_at,
+            status: "active",
+            message_count: 0,
+          });
+          seenSessions.add(message.session_id);
+        }
+        this.db
+          .prepare(`INSERT INTO messages (id, session_id, user_id, role, content, emotion, avatar_action, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            message.id,
+            scopedSessionId(userId, message.session_id),
+            userId,
+            message.role,
+            message.content,
+            message.emotion ?? null,
+            message.avatar_action ?? null,
+            message.created_at,
+          );
+      }
+
+      if (data.relationship) {
+        this.db
+          .prepare(`INSERT INTO relationship_states (user_id, stage, intimacy_level, trust_level, updated_at)
+            VALUES (?, ?, ?, ?, ?)`)
+          .run(userId, data.relationship.stage, data.relationship.intimacy_level, data.relationship.trust_level, nowIso());
+      }
+
+      for (const toolCall of data.tool_calls) {
+        this.db
+          .prepare(`INSERT INTO tool_calls (
+            id, request_id, user_id, tool_name, arguments_json, allowed, result_summary, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            toolCall.id,
+            toolCall.request_id,
+            userId,
+            toolCall.tool_name,
+            JSON.stringify(toolCall.arguments_json),
+            toolCall.allowed ? 1 : 0,
+            toolCall.result_summary ?? null,
+            toolCall.created_at,
+          );
+      }
+
+      this.db.exec("COMMIT");
+      return {
+        imported_at: nowIso(),
+        profile_id: userId,
+        replaced: true,
+        counts: {
+          settings: data.settings ? 1 : 0,
+          memories: data.memories.length,
+          sessions: seenSessions.size,
+          messages: data.messages.length,
+          relationship: data.relationship ? 1 : 0,
+          tool_calls: data.tool_calls.length,
+        },
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   clearLocalData(userId = defaultLocalProfileId()): void {
     this.db.exec("BEGIN");
     try {
-      this.db.prepare("DELETE FROM tool_calls WHERE user_id = ?").run(userId);
-      this.db.prepare("DELETE FROM relationship_states WHERE user_id = ?").run(userId);
-      this.db.prepare("DELETE FROM messages WHERE user_id = ?").run(userId);
-      this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
-      this.db.prepare("DELETE FROM memories WHERE user_id = ?").run(userId);
-      this.db.prepare("DELETE FROM audit_logs WHERE user_id = ?").run(userId);
-      this.db.prepare("DELETE FROM user_settings WHERE user_id = ?").run(userId);
-      this.db
-        .prepare("INSERT OR IGNORE INTO local_profiles (id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-        .run(userId, "本地用户", nowIso(), nowIso());
+      this.deleteLocalRows(userId);
+      this.ensureLocalProfile(userId);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  private assertImportedDataSafe(userId: string, data: SanitizedLocalDataImport): void {
+    assertUniqueValues(data.memories.map((memory) => memory.id));
+    assertUniqueValues(data.sessions.map((session) => session.id));
+    assertUniqueValues(data.messages.map((message) => message.id));
+    assertUniqueValues(data.tool_calls.map((toolCall) => toolCall.id));
+    const sessionDbIds = [...new Set([
+      ...data.sessions.map((session) => scopedSessionId(userId, session.id)),
+      ...data.messages.map((message) => scopedSessionId(userId, message.session_id)),
+    ])];
+    this.assertIdsAvailable("sessions", sessionDbIds, userId);
+    this.assertIdsAvailable("memories", data.memories.map((memory) => memory.id), userId);
+    this.assertIdsAvailable("messages", data.messages.map((message) => message.id), userId);
+    this.assertIdsAvailable("tool_calls", data.tool_calls.map((toolCall) => toolCall.id), userId);
+  }
+
+  private assertIdsAvailable(table: "sessions" | "memories" | "messages" | "tool_calls", ids: string[], userId: string): void {
+    for (const id of ids) {
+      const row = this.db.prepare(`SELECT user_id FROM ${table} WHERE id = ?`).get(id) as { user_id: string } | undefined;
+      if (row && row.user_id !== userId) throw new Error("bad_request");
+    }
+  }
+
+  private deleteLocalRows(userId: string): void {
+    this.db.prepare("DELETE FROM tool_calls WHERE user_id = ?").run(userId);
+    this.db.prepare("DELETE FROM relationship_states WHERE user_id = ?").run(userId);
+    this.db.prepare("DELETE FROM messages WHERE user_id = ?").run(userId);
+    this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    this.db.prepare("DELETE FROM memories WHERE user_id = ?").run(userId);
+    this.db.prepare("DELETE FROM audit_logs WHERE user_id = ?").run(userId);
+    this.db.prepare("DELETE FROM user_settings WHERE user_id = ?").run(userId);
+  }
+
+  private ensureLocalProfile(userId: string): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO local_profiles (id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run(userId, "本地用户", nowIso(), nowIso());
+  }
+
+  private insertImportedSession(userId: string, session: LocalSession): void {
+    this.db
+      .prepare(`INSERT INTO sessions (id, user_id, created_at, updated_at, status, title)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(
+        scopedSessionId(userId, session.id),
+        userId,
+        session.created_at,
+        session.updated_at,
+        session.status,
+        session.title ?? null,
+      );
   }
 
   private init(): void {
@@ -602,6 +786,200 @@ function rowToMessage(row: any): LocalChatMessage {
     avatar_action: row.avatar_action ?? undefined,
     created_at: row.created_at,
   };
+}
+
+function rowToToolCall(row: any): ToolCallRecord {
+  return {
+    id: row.id,
+    request_id: row.request_id,
+    user_id: row.user_id,
+    tool_name: row.tool_name,
+    arguments_json: parseArgumentsJson(row.arguments_json),
+    allowed: Boolean(row.allowed),
+    result_summary: row.result_summary ?? undefined,
+    created_at: row.created_at,
+  };
+}
+
+interface SanitizedLocalDataImport {
+  settings?: UserSettings;
+  memories: StoredMemory[];
+  sessions: LocalSession[];
+  messages: LocalChatMessage[];
+  relationship: RelationshipState | null;
+  tool_calls: ToolCallRecord[];
+}
+
+function sanitizeLocalDataImport(raw: unknown): SanitizedLocalDataImport {
+  if (!isPlainObject(raw)) throw new Error("bad_request");
+  return {
+    settings: raw.settings === undefined ? undefined : sanitizeImportedSettings(raw.settings),
+    memories: sanitizeImportedArray(raw.memories, sanitizeImportedMemory),
+    sessions: sanitizeImportedArray(raw.sessions, sanitizeImportedSession),
+    messages: sanitizeImportedArray(raw.messages, sanitizeImportedMessage),
+    relationship: raw.relationship === undefined || raw.relationship === null ? null : sanitizeRelationshipState(raw.relationship as RelationshipState),
+    tool_calls: sanitizeImportedArray(raw.tool_calls, sanitizeImportedToolCall),
+  };
+}
+
+function sanitizeImportedArray<T>(value: unknown, mapper: (value: unknown) => T): T[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("bad_request");
+  return value.map(mapper);
+}
+
+function sanitizeImportedSettings(raw: unknown): UserSettings {
+  if (!isPlainObject(raw)) throw new Error("bad_request");
+  const settings: Partial<UserSettings> = {};
+  for (const key of Object.keys(raw)) {
+    if (!USER_SETTING_KEYS.has(key as keyof UserSettings)) throw new Error("bad_request");
+  }
+  for (const key of ["memory_enabled", "proactive_enabled", "voice_enabled", "avatar_enabled", "adult_romance_enabled"] as const) {
+    if (key in raw) {
+      if (typeof raw[key] !== "boolean") throw new Error("bad_request");
+      settings[key] = raw[key];
+    }
+  }
+  if ("romance_realism_level" in raw) {
+    if (typeof raw.romance_realism_level !== "number" || !Number.isFinite(raw.romance_realism_level)) throw new Error("bad_request");
+    if (raw.romance_realism_level < 0 || raw.romance_realism_level > 2) throw new Error("bad_request");
+    settings.romance_realism_level = raw.romance_realism_level;
+  }
+  if ("preferred_name" in raw) {
+    if (typeof raw.preferred_name !== "string" || raw.preferred_name.length > 80) throw new Error("bad_request");
+    settings.preferred_name = raw.preferred_name.trim() || undefined;
+  }
+  if ("quiet_hours" in raw) {
+    if (!Array.isArray(raw.quiet_hours) || raw.quiet_hours.some((value) => typeof value !== "string" || value.length > 20)) throw new Error("bad_request");
+    settings.quiet_hours = raw.quiet_hours;
+  }
+  return { ...DEFAULT_USER_SETTINGS, ...settings };
+}
+
+function sanitizeImportedMemory(raw: unknown): StoredMemory {
+  if (!isPlainObject(raw)) throw new Error("bad_request");
+  const memoryType = requiredString(raw.memory_type, 80);
+  const sensitivity = requiredString(raw.sensitivity, 20);
+  const confidence = requiredNumber(raw.confidence);
+  if (!MEMORY_TYPES.has(memoryType as MemoryType)) throw new Error("bad_request");
+  if (!MEMORY_SENSITIVITIES.has(sensitivity)) throw new Error("bad_request");
+  if (confidence < 0 || confidence > 1) throw new Error("bad_request");
+  return {
+    id: requiredString(raw.id, 120),
+    user_id: "",
+    memory_type: memoryType as MemoryType,
+    content: requiredString(raw.content, 2_000),
+    confidence,
+    sensitivity: sensitivity as StoredMemory["sensitivity"],
+    source_message_id: requiredString(raw.source_message_id, 120),
+    user_confirmed: requiredBoolean(raw.user_confirmed),
+    should_store: requiredBoolean(raw.should_store),
+    needs_user_confirmation: requiredBoolean(raw.needs_user_confirmation),
+    created_at: optionalString(raw.created_at, 80) ?? nowIso(),
+    updated_at: optionalString(raw.updated_at, 80) ?? nowIso(),
+    deleted_at: optionalString(raw.deleted_at, 80),
+  };
+}
+
+function sanitizeImportedSession(raw: unknown): LocalSession {
+  if (!isPlainObject(raw)) throw new Error("bad_request");
+  const sourceUserId = optionalString(raw.user_id, 120);
+  const id = normalizeImportedSessionId(requiredString(raw.id, 120), sourceUserId);
+  const status = raw.status === "archived" ? "archived" : raw.status === "active" || raw.status === undefined ? "active" : undefined;
+  if (!status) throw new Error("bad_request");
+  return {
+    id,
+    user_id: "",
+    title: sanitizeTitle(optionalString(raw.title, 120)),
+    created_at: optionalString(raw.created_at, 80) ?? nowIso(),
+    updated_at: optionalString(raw.updated_at, 80) ?? nowIso(),
+    status,
+    message_count: 0,
+  };
+}
+
+function sanitizeImportedMessage(raw: unknown): LocalChatMessage {
+  if (!isPlainObject(raw)) throw new Error("bad_request");
+  const sourceUserId = optionalString(raw.user_id, 120);
+  const sessionId = normalizeImportedSessionId(requiredString(raw.session_id, 120), sourceUserId);
+  const role = requiredString(raw.role, 20);
+  if (!MESSAGE_ROLES.has(role)) throw new Error("bad_request");
+  return {
+    id: requiredString(raw.id, 120),
+    session_id: sessionId,
+    user_id: "",
+    role: role as LocalChatMessage["role"],
+    content: requiredString(raw.content, 20_000),
+    emotion: optionalString(raw.emotion, 80),
+    avatar_action: optionalString(raw.avatar_action, 80),
+    created_at: optionalString(raw.created_at, 80) ?? nowIso(),
+  };
+}
+
+function sanitizeImportedToolCall(raw: unknown): ToolCallRecord {
+  if (!isPlainObject(raw)) throw new Error("bad_request");
+  return {
+    id: requiredString(raw.id, 120),
+    request_id: requiredString(raw.request_id, 120),
+    user_id: "",
+    tool_name: requiredString(raw.tool_name, 120),
+    arguments_json: parseArgumentsJson(raw.arguments_json),
+    allowed: requiredBoolean(raw.allowed),
+    result_summary: optionalString(raw.result_summary, 500),
+    created_at: optionalString(raw.created_at, 80) ?? nowIso(),
+  };
+}
+
+function parseArgumentsJson(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      return parseArgumentsJson(JSON.parse(value));
+    } catch {
+      throw new Error("bad_request");
+    }
+  }
+  if (!isPlainObject(value)) throw new Error("bad_request");
+  return value;
+}
+
+function requiredString(value: unknown, maxLength: number): string {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > maxLength) throw new Error("bad_request");
+  return value;
+}
+
+function optionalString(value: unknown, maxLength: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || value.length > maxLength) throw new Error("bad_request");
+  return value;
+}
+
+function requiredBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (value === 0 || value === 1) return Boolean(value);
+  throw new Error("bad_request");
+}
+
+function requiredNumber(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("bad_request");
+  return value;
+}
+
+function normalizeImportedSessionId(sessionId: string, sourceUserId?: string): string {
+  const logicalId = sourceUserId ? unscopedSessionId(sourceUserId, sessionId) : sessionId;
+  if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(logicalId)) throw new Error("bad_request");
+  return logicalId;
+}
+
+function assertUniqueValues(values: string[]): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) throw new Error("bad_request");
+    seen.add(value);
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function sanitizeTitle(title: string | undefined): string | undefined {

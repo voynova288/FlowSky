@@ -10,7 +10,7 @@ npm run dev:api
 
 Open `http://127.0.0.1:3000/`.
 
-Default local state (SQLite includes settings, memories, sessions/messages, tool calls, and audit metadata):
+Default local state (SQLite includes settings, memories, sessions/messages, tool calls, and audit metadata; export/import works through the local web UI or `/local/export` + `/local/import`):
 
 ```text
 ~/.liukong/liukong.db
