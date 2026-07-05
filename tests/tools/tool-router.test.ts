@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ToolRouter } from "../../packages/agent-gateway/src/index.ts";
+import { SqliteStateStore, ToolPermissionGate, ToolRouter } from "../../packages/agent-gateway/src/index.ts";
 import { resetLocalTimerSchedulerForTests } from "../../packages/agent-gateway/src/tools/tools/set_timer.ts";
 
 test("test_allowed_tool_call_success", async () => {
@@ -63,6 +63,24 @@ test("set_timer transitions to fired", async (t) => {
   const fired = router.getTimerStatus(timer.timer_id)!;
   assert.equal(fired.status, "fired");
   assert.equal(typeof fired.fired_at, "string");
+});
+
+test("set_timer persists when router uses sqlite store", async (t) => {
+  resetLocalTimerSchedulerForTests();
+  t.after(() => resetLocalTimerSchedulerForTests());
+  const store = new SqliteStateStore(":memory:");
+  t.after(() => store.close());
+  const router = new ToolRouter(new ToolPermissionGate(), store);
+  const { result } = await router.execute({
+    request_id: "r1",
+    user_id: "u1",
+    tool_name: "set_timer",
+    arguments_json: { seconds: 86400, label: "persistent" },
+  });
+  const timer = result as any;
+  assert.equal(timer.status, "scheduled");
+  assert.equal(router.getTimerStatus(timer.timer_id, "u1")?.label, "persistent");
+  assert.equal(store.listLocalTimerStatuses("u1").length, 1);
 });
 
 test("set_timer validates bounds and labels", async () => {

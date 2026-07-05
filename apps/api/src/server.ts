@@ -531,6 +531,22 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         });
       }
 
+      if (req.method === "GET" && url.pathname === "/timers") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        return json(res, 200, { timers: stateStore.listLocalTimerStatuses(localAuth.profileId) });
+      }
+
+      const timerMatch = url.pathname.match(/^\/timers\/([^/]+)$/);
+      if (req.method === "GET" && timerMatch) {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        if (!stateStore) return json(res, 501, { error: "local_store_unavailable" });
+        const timer = stateStore.getLocalTimerStatus(localAuth.profileId, decodeURIComponent(timerMatch[1]));
+        return json(res, timer ? 200 : 404, timer ? { timer } : { error: "timer_not_found" });
+      }
+
       if (req.method === "GET" && url.pathname === "/memories") {
         const localAuth = auth(req, url);
         if (!localAuth) return writeUnauthorized(res);

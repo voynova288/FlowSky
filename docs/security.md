@@ -36,10 +36,11 @@ The desktop launcher keeps the same localhost model: it starts the local API ser
 - Heuristic long-term memory extraction stores concise third-person summaries for durable preferences instead of raw chat sentences when possible; duplicate entries are skipped and newer durable preferences can replace older matching preference slots.
 - Lightweight emotional state is stored locally as mood/intensity/support-need metadata, not raw emotional diary text.
 - Sensitive memories are stored as pending candidates only and require explicit confirmation.
+- Reminder timers are persisted as local SQLite rows and can be inspected after restart; v1 does not grant shell/filesystem notification tools.
 - Users can view, delete, export, import/restore, and reset local data.
 - Editable character cards are validated before saving or import; romance cards must remain adult-coded and must forbid claiming to be human or replacing real relationships.
 - Audit logs store prompt hashes, memory IDs, tool call IDs, usage and flags — not full prompts.
-- Local import restores only the currently authenticated profile; imported `profile_id` / `user_id` values are ignored and rewritten locally. API keys and local tokens are never part of import/export. Character-card import is limited to the validated default local card.
+- Local import restores only the currently authenticated profile; imported `profile_id` / `user_id` values are ignored and rewritten locally. API keys and local tokens are never part of import/export. Character-card import is limited to the validated default local card. Timer rows are restored only into the current local profile.
 
 ## Tools
 

@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { defaultLocalDbPath, defaultLocalProfileId } from "../local/paths.ts";
 import { DatabaseSync } from "node:sqlite";
-import type { EmotionalState, EmotionalSupportNeed, LLMMessage, LocalChatMessage, LocalDataExport, LocalDataImportResult, LocalSession, MemoryCandidate, MemoryType, RelationshipStage, RelationshipState, StoredMemory, ToolCallRecord, UserMood, UserSettings } from "../types.ts";
+import type { EmotionalState, EmotionalSupportNeed, LLMMessage, LocalChatMessage, LocalDataExport, LocalDataImportResult, LocalSession, LocalTimerStatus, MemoryCandidate, MemoryType, RelationshipStage, RelationshipState, StoredMemory, ToolCallRecord, UserMood, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import type { MemoryStoreLike } from "../memory/MemoryStore.ts";
 import { DEFAULT_USER_SETTINGS, type SettingsStoreLike } from "../tools/tools/settings_tools.ts";
@@ -173,6 +173,23 @@ const MIGRATIONS = [
         updated_at TEXT NOT NULL,
         source_message_id TEXT
       );
+    `,
+  },
+  {
+    version: 6,
+    name: "persistent_local_timers",
+    sql: `
+      CREATE TABLE IF NOT EXISTS local_timers (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        seconds INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        fire_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        fired_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_local_timers_user_status_fire ON local_timers(user_id, status, fire_at);
     `,
   },
 ] as const;
@@ -497,6 +514,52 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     return next;
   }
 
+  createLocalTimer(userId: string, args: { seconds: number; label: string; id?: string }): LocalTimerStatus {
+    const seconds = sanitizeTimerSeconds(args.seconds);
+    const label = sanitizeTimerLabel(args.label);
+    const createdAt = nowIso();
+    const timer: LocalTimerStatus = {
+      timer_id: args.id ?? randomId("timer"),
+      label,
+      seconds,
+      created_at: createdAt,
+      fire_at: new Date(Date.now() + seconds * 1000).toISOString(),
+      status: "scheduled",
+    };
+    this.db
+      .prepare(`INSERT INTO local_timers (id, user_id, label, seconds, created_at, fire_at, status, fired_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(timer.timer_id, userId, timer.label, timer.seconds, timer.created_at, timer.fire_at, timer.status, null);
+    return timer;
+  }
+
+  getLocalTimerStatus(userId: string, timerId: string): LocalTimerStatus | undefined {
+    this.markDueLocalTimersFired(userId);
+    const row = this.db.prepare("SELECT * FROM local_timers WHERE user_id = ? AND id = ?").get(userId, timerId) as any | undefined;
+    return row ? rowToTimer(row) : undefined;
+  }
+
+  listLocalTimerStatuses(userId: string, limit = 500): LocalTimerStatus[] {
+    this.markDueLocalTimersFired(userId);
+    const rows = this.db
+      .prepare("SELECT * FROM local_timers WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
+      .all(userId, limit) as any[];
+    return rows.map(rowToTimer);
+  }
+
+  markLocalTimerFired(userId: string, timerId: string, firedAt = nowIso()): LocalTimerStatus | undefined {
+    this.db
+      .prepare("UPDATE local_timers SET status = 'fired', fired_at = COALESCE(fired_at, ?) WHERE user_id = ? AND id = ? AND status = 'scheduled'")
+      .run(firedAt, userId, timerId);
+    return this.getLocalTimerStatus(userId, timerId);
+  }
+
+  markDueLocalTimersFired(userId: string, at = nowIso()): void {
+    this.db
+      .prepare("UPDATE local_timers SET status = 'fired', fired_at = COALESCE(fired_at, ?) WHERE user_id = ? AND status = 'scheduled' AND fire_at <= ?")
+      .run(at, userId, at);
+  }
+
   recordAudit(entry: RequestLogEntry): void {
     this.db
       .prepare(`INSERT INTO audit_logs (
@@ -535,6 +598,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
       .all(userId) as any[]).map(rowToMessage);
     const relationship = this.getRelationshipState(userId);
     const emotionalState = this.getEmotionalState(userId);
+    const timers = this.listLocalTimerStatuses(userId);
     const toolCalls = (this.db
       .prepare("SELECT * FROM tool_calls WHERE user_id = ? ORDER BY created_at DESC")
       .all(userId) as any[]).map(rowToToolCall);
@@ -552,6 +616,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
       messages,
       relationship,
       emotional_state: emotionalState,
+      timers,
       tool_calls: toolCalls,
       local_audit_logs: auditLogs,
     };
@@ -652,6 +717,13 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
           );
       }
 
+      for (const timer of data.timers) {
+        this.db
+          .prepare(`INSERT INTO local_timers (id, user_id, label, seconds, created_at, fire_at, status, fired_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(timer.timer_id, userId, timer.label, timer.seconds, timer.created_at, timer.fire_at, timer.status, timer.fired_at ?? null);
+      }
+
       for (const toolCall of data.tool_calls) {
         this.db
           .prepare(`INSERT INTO tool_calls (
@@ -681,6 +753,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
           messages: data.messages.length,
           relationship: data.relationship ? 1 : 0,
           emotional_state: data.emotional_state ? 1 : 0,
+          timers: data.timers.length,
           tool_calls: data.tool_calls.length,
         },
       };
@@ -706,6 +779,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     assertUniqueValues(data.memories.map((memory) => memory.id));
     assertUniqueValues(data.sessions.map((session) => session.id));
     assertUniqueValues(data.messages.map((message) => message.id));
+    assertUniqueValues(data.timers.map((timer) => timer.timer_id));
     assertUniqueValues(data.tool_calls.map((toolCall) => toolCall.id));
     const sessionDbIds = [...new Set([
       ...data.sessions.map((session) => scopedSessionId(userId, session.id)),
@@ -714,10 +788,11 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     this.assertIdsAvailable("sessions", sessionDbIds, userId);
     this.assertIdsAvailable("memories", data.memories.map((memory) => memory.id), userId);
     this.assertIdsAvailable("messages", data.messages.map((message) => message.id), userId);
+    this.assertIdsAvailable("local_timers", data.timers.map((timer) => timer.timer_id), userId);
     this.assertIdsAvailable("tool_calls", data.tool_calls.map((toolCall) => toolCall.id), userId);
   }
 
-  private assertIdsAvailable(table: "sessions" | "memories" | "messages" | "tool_calls", ids: string[], userId: string): void {
+  private assertIdsAvailable(table: "sessions" | "memories" | "messages" | "tool_calls" | "local_timers", ids: string[], userId: string): void {
     for (const id of ids) {
       const row = this.db.prepare(`SELECT user_id FROM ${table} WHERE id = ?`).get(id) as { user_id: string } | undefined;
       if (row && row.user_id !== userId) throw new Error("bad_request");
@@ -728,6 +803,7 @@ export class SqliteStateStore implements MemoryStoreLike, SettingsStoreLike {
     this.db.prepare("DELETE FROM tool_calls WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM relationship_states WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM emotional_states WHERE user_id = ?").run(userId);
+    this.db.prepare("DELETE FROM local_timers WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM messages WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
     this.db.prepare("DELETE FROM memories WHERE user_id = ?").run(userId);
@@ -873,6 +949,19 @@ function rowToMessage(row: any): LocalChatMessage {
   };
 }
 
+function rowToTimer(row: any): LocalTimerStatus {
+  const status = row.status === "fired" ? "fired" : "scheduled";
+  return {
+    timer_id: String(row.id ?? row.timer_id),
+    label: String(row.label),
+    seconds: Number(row.seconds),
+    created_at: String(row.created_at),
+    fire_at: String(row.fire_at),
+    status,
+    fired_at: row.fired_at ?? undefined,
+  };
+}
+
 function rowToToolCall(row: any): ToolCallRecord {
   return {
     id: row.id,
@@ -893,6 +982,7 @@ interface SanitizedLocalDataImport {
   messages: LocalChatMessage[];
   relationship: RelationshipState | null;
   emotional_state: EmotionalState | null;
+  timers: LocalTimerStatus[];
   tool_calls: ToolCallRecord[];
 }
 
@@ -905,6 +995,7 @@ function sanitizeLocalDataImport(raw: unknown): SanitizedLocalDataImport {
     messages: sanitizeImportedArray(raw.messages, sanitizeImportedMessage),
     relationship: raw.relationship === undefined || raw.relationship === null ? null : sanitizeRelationshipState(raw.relationship as RelationshipState),
     emotional_state: raw.emotional_state === undefined || raw.emotional_state === null ? null : sanitizeEmotionalState(raw.emotional_state as EmotionalState),
+    timers: sanitizeImportedArray(raw.timers, sanitizeImportedTimer),
     tool_calls: sanitizeImportedArray(raw.tool_calls, sanitizeImportedToolCall),
   };
 }
@@ -1003,6 +1094,23 @@ function sanitizeImportedMessage(raw: unknown): LocalChatMessage {
   };
 }
 
+function sanitizeImportedTimer(raw: unknown): LocalTimerStatus {
+  if (!isPlainObject(raw)) throw new Error("bad_request");
+  const status = raw.status === "fired" ? "fired" : raw.status === "scheduled" ? "scheduled" : undefined;
+  if (!status) throw new Error("bad_request");
+  const timer: LocalTimerStatus = {
+    timer_id: requiredString(raw.timer_id ?? raw.id, 120),
+    label: sanitizeTimerLabel(requiredString(raw.label, 120)),
+    seconds: sanitizeTimerSeconds(requiredNumber(raw.seconds)),
+    created_at: optionalString(raw.created_at, 80) ?? nowIso(),
+    fire_at: optionalString(raw.fire_at, 80) ?? nowIso(),
+    status,
+    fired_at: optionalString(raw.fired_at, 80),
+  };
+  if (timer.status === "scheduled") timer.fired_at = undefined;
+  return timer;
+}
+
 function sanitizeImportedToolCall(raw: unknown): ToolCallRecord {
   if (!isPlainObject(raw)) throw new Error("bad_request");
   return {
@@ -1015,6 +1123,17 @@ function sanitizeImportedToolCall(raw: unknown): ToolCallRecord {
     result_summary: optionalString(raw.result_summary, 500),
     created_at: optionalString(raw.created_at, 80) ?? nowIso(),
   };
+}
+
+function sanitizeTimerSeconds(value: number): number {
+  if (!Number.isInteger(value) || value < 1 || value > 24 * 3600) throw new Error("bad_request");
+  return value;
+}
+
+function sanitizeTimerLabel(value: string): string {
+  const trimmed = value.trim() || "timer";
+  if (trimmed.length > 120) throw new Error("bad_request");
+  return trimmed;
 }
 
 function parseArgumentsJson(value: unknown): Record<string, unknown> {

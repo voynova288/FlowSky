@@ -30,7 +30,7 @@ test("sqlite migrations create expected schema versions", () => {
     store.close();
     const db = new DatabaseSync(dbPath);
     const rows = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: number }>;
-    assert.deepEqual(rows.map((row) => row.version), [1, 2, 3, 4, 5]);
+    assert.deepEqual(rows.map((row) => row.version), [1, 2, 3, 4, 5, 6]);
     const toolCalls = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'").get();
     assert.ok(toolCalls);
     const profiles = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='local_profiles'").get();
@@ -39,6 +39,8 @@ test("sqlite migrations create expected schema versions", () => {
     assert.ok(sessionColumns.some((column) => column.name === "title"));
     const emotionTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='emotional_states'").get();
     assert.ok(emotionTable);
+    const timersTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='local_timers'").get();
+    assert.ok(timersTable);
     db.close();
   });
 });
@@ -67,6 +69,34 @@ test("sqlite settings and memories persist across store instances", () => {
     assert.equal(second.delete("u1", saved.id), true);
     assert.equal(second.retrieve("u1", "短句").length, 0);
     second.close();
+  });
+});
+
+test("sqlite local timers persist, fire, export, import, and clear", () => {
+  withTempDb((sourcePath) => {
+    withTempDb((targetPath) => {
+      const source = new SqliteStateStore(sourcePath);
+      const timer = source.createLocalTimer("u1", { seconds: 60, label: "喝水" });
+      assert.equal(source.getLocalTimerStatus("u1", timer.timer_id)?.status, "scheduled");
+      source.close();
+
+      const reopened = new SqliteStateStore(sourcePath);
+      assert.equal(reopened.getLocalTimerStatus("u1", timer.timer_id)?.label, "喝水");
+      const fired = reopened.markLocalTimerFired("u1", timer.timer_id)!;
+      assert.equal(fired.status, "fired");
+      assert.equal(typeof fired.fired_at, "string");
+      const exported = reopened.exportLocalData("u1") as any;
+      assert.equal(exported.timers.length, 1);
+
+      const target = new SqliteStateStore(targetPath);
+      const result = target.importLocalData("restored", exported);
+      assert.equal(result.counts.timers, 1);
+      assert.equal(target.listLocalTimerStatuses("restored")[0].label, "喝水");
+      target.clearLocalData("restored");
+      assert.equal(target.listLocalTimerStatuses("restored").length, 0);
+      reopened.close();
+      target.close();
+    });
   });
 });
 

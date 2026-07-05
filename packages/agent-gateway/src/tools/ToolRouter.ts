@@ -2,20 +2,23 @@ import { ToolPermissionGate } from "../safety/ToolPermissionGate.ts";
 import type { LLMToolDefinition, LocalTimerStatus, ToolCallRecord, UserSettings } from "../types.ts";
 import { randomId, nowIso } from "../util.ts";
 import { get_current_time } from "./tools/get_current_time.ts";
-import { getTimerStatus, listTimerStatuses, set_timer } from "./tools/set_timer.ts";
+import { getTimerStatus, listTimerStatuses, set_timer, type LocalTimerStoreLike } from "./tools/set_timer.ts";
 import { summarize_session } from "./tools/summarize_session.ts";
 import { get_user_settings, SettingsStore, type SettingsStoreLike, update_user_settings } from "./tools/settings_tools.ts";
 
 export class ToolRouter {
   readonly settingsStore: SettingsStoreLike;
   private readonly permissionGate: ToolPermissionGate;
+  private readonly timerStore?: LocalTimerStoreLike;
 
   constructor(
     permissionGate = new ToolPermissionGate(),
     settingsStore: SettingsStoreLike = new SettingsStore(),
+    timerStore?: LocalTimerStoreLike,
   ) {
     this.permissionGate = permissionGate;
     this.settingsStore = settingsStore;
+    this.timerStore = timerStore ?? timerStoreFrom(settingsStore);
   }
 
   definitions(): LLMToolDefinition[] {
@@ -36,7 +39,7 @@ export class ToolRouter {
         type: "function",
         function: {
           name: "set_timer",
-          description: "Schedule a low-risk in-process local reminder timer. It updates local timer status only and does not trigger OS notifications.",
+          description: "Schedule a low-risk local reminder timer. With the local SQLite store it persists across restarts; otherwise it is in-process only. It does not trigger OS notifications yet.",
           parameters: {
             type: "object",
             properties: { seconds: { type: "number", minimum: 1, maximum: 86400 }, label: { type: "string", maxLength: 120 } },
@@ -90,12 +93,12 @@ export class ToolRouter {
     ].filter((definition) => this.permissionGate.isAllowed(definition.function.name));
   }
 
-  getTimerStatus(timerId: string): LocalTimerStatus | undefined {
-    return getTimerStatus(timerId);
+  getTimerStatus(timerId: string, userId = "default"): LocalTimerStatus | undefined {
+    return this.timerStore?.getLocalTimerStatus(userId, timerId) ?? getTimerStatus(timerId);
   }
 
-  listTimerStatuses(): LocalTimerStatus[] {
-    return listTimerStatuses();
+  listTimerStatuses(userId = "default"): LocalTimerStatus[] {
+    return this.timerStore?.listLocalTimerStatuses(userId) ?? listTimerStatuses();
   }
 
   async execute(params: {
@@ -129,7 +132,7 @@ export class ToolRouter {
       case "get_current_time":
         return get_current_time(args as { timezone?: string });
       case "set_timer":
-        return set_timer(args as { seconds: number; label?: string });
+        return set_timer(args as { seconds: number; label?: string }, { userId, store: this.timerStore });
       case "summarize_session":
         return summarize_session(args as any);
       case "get_user_settings":
@@ -140,6 +143,16 @@ export class ToolRouter {
         throw new Error(`Unsupported tool: ${toolName}`);
     }
   }
+}
+
+function timerStoreFrom(value: unknown): LocalTimerStoreLike | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<LocalTimerStoreLike>;
+  return typeof candidate.createLocalTimer === "function"
+    && typeof candidate.getLocalTimerStatus === "function"
+    && typeof candidate.listLocalTimerStatuses === "function"
+    ? candidate as LocalTimerStoreLike
+    : undefined;
 }
 
 function sanitizeSettingsToolPatch(args: Record<string, unknown>): Partial<UserSettings> {

@@ -249,6 +249,7 @@ export interface LocalDataExport {
   messages: LocalChatMessage[];
   relationship: RelationshipState | null;
   emotional_state: EmotionalState | null;
+  timers: LocalTimerStatus[];
   tool_calls: ToolCallRecord[];
   local_audit_logs: unknown[];
 }
@@ -264,6 +265,7 @@ export interface LocalDataImportResult {
     messages: number;
     relationship: number;
     emotional_state: number;
+    timers: number;
     tool_calls: number;
   };
 }

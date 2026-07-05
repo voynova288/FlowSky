@@ -102,6 +102,8 @@ DeepSeek 或 OpenAI API（用户自带 key）
 - `PATCH /settings?profile_id=default`
 - `GET /providers/ollama/status?profile_id=default` — local Ollama health/model list and `ollama pull` guidance; no provider API key required. Chat requests may set `x-liukong-model` when `x-liukong-provider: ollama` to choose an installed local model for that request.
 - `GET /emotion?profile_id=default` — current lightweight local emotional state + relationship state
+- `GET /timers?profile_id=default` — local persisted reminder timers
+- `GET /timers/:id?profile_id=default`
 - `GET /memories?profile_id=default`
 - `PATCH /memories/:id?profile_id=default`
 - `POST /memories/:id/confirm?profile_id=default`
@@ -117,10 +119,10 @@ DeepSeek 或 OpenAI API（用户自带 key）
 - AgentGateway：统一 `ChatRequest` / `AgentResponse`、streaming events、request_id、usage/latency/safety 记录
 - PromptAssembler：文件化 system/compliance/output policy、JSON 角色卡、关系状态、用户设置、记忆注入
 - MemoryController：长期记忆抽取会整理为简短第三人称摘要（称呼、喜好、厌恶、陪伴方式、边界偏好），自动跳过重复记忆并按最新称呼/回复风格/同场景陪伴偏好覆盖旧记忆，写入 gate、pending/confirm/reject/edit、检索、删除、敏感信息确认逻辑
-- SQLite 本地持久化：settings、memories、sessions/messages、relationship、emotional_state、tool_calls、local_audit_logs view
+- SQLite 本地持久化：settings、memories、sessions/messages、relationship、emotional_state、local_timers、tool_calls、local_audit_logs view
 - Local token：默认保护 localhost API
 - 本地角色卡：首次启动复制默认角色卡到 `~/.liukong/characters/`，支持查看、编辑、恢复默认
-- 本地导出/导入/清空：JSON export + restore current profile/settings/memories/sessions/tool calls/character card + reset profile data
+- 本地导出/导入/清空：JSON export + restore current profile/settings/memories/sessions/timers/tool calls/character card + reset profile data
 - 最小 Web UI / 桌面 app-mode launcher：聊天、session 管理、settings、character、memory 查看/确认/编辑、emotion 状态、local export/import/reset
 - CI / Docker / security notes
 

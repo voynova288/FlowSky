@@ -281,6 +281,7 @@ test("api local import restores current profile data and rejects malformed impor
       ],
       relationship: { stage: "close", intimacy_level: 3, trust_level: 4 },
       emotional_state: { mood: "anxious", intensity: 3, valence: -2, support_need: "comfort", updated_at: now, source_message_id: "msg_imported_user" },
+      timers: [{ timer_id: "timer_imported", label: "喝水", seconds: 60, created_at: now, fire_at: now, status: "scheduled" }],
       tool_calls: [{ id: "tool_imported", request_id: "req_imported", user_id: "other-profile", tool_name: "get_current_time", arguments_json: { timezone: "Asia/Shanghai" }, allowed: true, result_summary: "ok", created_at: now }],
       character: { ...character.character, name: "恢复角色" },
       local_audit_logs: [{ request_id: "ignored_audit" }],
@@ -296,6 +297,7 @@ test("api local import restores current profile data and rejects malformed impor
     assert.equal(importedBody.ok, true);
     assert.equal(importedBody.profile_id, "u1");
     assert.equal(importedBody.counts.messages, 2);
+    assert.equal(importedBody.counts.timers, 1);
     assert.equal(importedBody.character_imported, true);
     assert.equal(store.recentMessages("u1", "old-session").length, 0);
 
@@ -308,6 +310,7 @@ test("api local import restores current profile data and rejects malformed impor
     assert.deepEqual(exportedBody.messages.map((message: any) => message.content), ["请恢复", "恢复好了"]);
     assert.equal(exportedBody.relationship.stage, "close");
     assert.equal(exportedBody.emotional_state.mood, "anxious");
+    assert.equal(exportedBody.timers[0].label, "喝水");
     assert.equal(exportedBody.tool_calls[0].user_id, "u1");
     assert.equal(exportedBody.local_audit_logs.length, 0);
     assert.equal(exportedBody.character.name, "恢复角色");
@@ -333,6 +336,19 @@ test("api local import restores current profile data and rejects malformed impor
     });
     assert.equal(badCharacter.status, 400);
     assert.deepEqual(await badCharacter.json(), { error: "bad_character_card" });
+  });
+});
+
+test("api timer routes list persisted local timers", async () => {
+  await withStatefulServer(async (baseUrl, store) => {
+    const timer = store.createLocalTimer("u1", { seconds: 60, label: "喝水" });
+    const list = await fetch(`${baseUrl}/timers?profile_id=u1`);
+    const listBody = await list.json();
+    assert.equal(listBody.timers.length, 1);
+    assert.equal(listBody.timers[0].label, "喝水");
+
+    const one = await fetch(`${baseUrl}/timers/${encodeURIComponent(timer.timer_id)}?profile_id=u1`);
+    assert.equal((await one.json()).timer.timer_id, timer.timer_id);
   });
 });
 
