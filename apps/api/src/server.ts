@@ -8,6 +8,8 @@ import {
   defaultLocalDataDir,
   defaultLocalProfileId,
   LocalCharacterStore,
+  modelConfigForMode,
+  resolveProviderConfig,
   SqliteStateStore,
   validateCharacterCard,
   type CharacterCard,
@@ -64,6 +66,7 @@ export interface CreateApiServerOptions {
   characterStore?: LocalCharacterStore;
   localToken?: string;
   requireLocalToken?: boolean;
+  fetchFn?: typeof fetch;
 }
 
 function html(res: ServerResponse, status: number, body: string): void {
@@ -246,6 +249,78 @@ function providerRequiresApiKey(providerName: LLMProviderName): boolean {
   return providerName !== "ollama";
 }
 
+async function inspectOllama(fetchFn: typeof fetch = fetch) {
+  const baseUrl = resolveProviderConfig({ providerName: "ollama" }).baseUrl;
+  const configuredModel = modelConfigForMode("girlfriend_chat", "ollama").model;
+  try {
+    const models = await listOllamaModels(baseUrl, fetchFn);
+    return {
+      ok: true,
+      provider: "ollama",
+      running: true,
+      base_url: baseUrl,
+      configured_model: configuredModel,
+      configured_model_available: models.includes(configuredModel),
+      models,
+      pull_command: models.includes(configuredModel) ? undefined : `ollama pull ${configuredModel}`,
+      install_hint: models.length ? undefined : "Ollama 已运行，但还没有本地模型。先执行 pull_command 拉取默认模型。",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      provider: "ollama",
+      running: false,
+      base_url: baseUrl,
+      configured_model: configuredModel,
+      configured_model_available: false,
+      models: [],
+      pull_command: `ollama pull ${configuredModel}`,
+      install_hint: "请先安装并启动 Ollama：ollama serve；然后执行 pull_command 拉取默认模型。",
+      error: sanitizeOllamaStatusError(error),
+    };
+  }
+}
+
+async function listOllamaModels(baseUrl: string, fetchFn: typeof fetch): Promise<string[]> {
+  try {
+    const jsonBody = await fetchJsonWithTimeout(`${baseUrl.replace(/\/$/, "")}/models`, fetchFn);
+    const models = parseOpenAIModelList(jsonBody);
+    if (models.length > 0) return models;
+  } catch {
+    // Older Ollama builds may not expose /v1/models; fall back to native tags.
+  }
+  const nativeBaseUrl = baseUrl.replace(/\/v1\/?$/, "");
+  const jsonBody = await fetchJsonWithTimeout(`${nativeBaseUrl.replace(/\/$/, "")}/api/tags`, fetchFn);
+  return parseOllamaTagList(jsonBody);
+}
+
+async function fetchJsonWithTimeout(url: string, fetchFn: typeof fetch): Promise<any> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2_000);
+  try {
+    const response = await fetchFn(url, { headers: { accept: "application/json" }, signal: controller.signal });
+    if (!response.ok) throw new Error(`http_${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseOpenAIModelList(raw: any): string[] {
+  if (!Array.isArray(raw?.data)) return [];
+  return raw.data.map((model: any) => String(model?.id ?? "").trim()).filter(Boolean).sort();
+}
+
+function parseOllamaTagList(raw: any): string[] {
+  if (!Array.isArray(raw?.models)) return [];
+  return raw.models.map((model: any) => String(model?.name ?? "").trim()).filter(Boolean).sort();
+}
+
+function sanitizeOllamaStatusError(error: unknown): string {
+  if (error instanceof Error) return error.name === "AbortError" ? "timeout" : error.message.slice(0, 160);
+  return String(error).slice(0, 160);
+}
+
 function importedCharacterCard(raw: unknown): CharacterCard | undefined {
   if (!isObject(raw)) return undefined;
   if ("character" in raw) return validateCharacterCard(raw.character);
@@ -267,7 +342,7 @@ function withLocalToken(indexHtml: string, localToken: string, profileId: string
 export function createApiServer(input: AgentGateway | CreateApiServerOptions = {}) {
   const options: CreateApiServerOptions = input instanceof AgentGateway ? { gateway: input } : input;
   const stateStore = options.stateStore ?? (options.gateway ? undefined : new SqliteStateStore());
-  const baseGateway = options.gateway ?? createDefaultAgentGateway({ stateStore, allowMissingApiKey: true });
+  const baseGateway = options.gateway ?? createDefaultAgentGateway({ stateStore, allowMissingApiKey: true, fetchFn: options.fetchFn });
   let characterStore = options.characterStore;
   const requireToken = options.requireLocalToken ?? localTokenRequired();
   const localToken = options.localToken ?? (requireToken ? loadOrCreateLocalToken(defaultLocalDataDir()) : "test-local-token");
@@ -290,7 +365,7 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
     if (options.gateway) return options.gateway;
     if (options.gatewayFactory) return options.gatewayFactory(selection.apiKey, selection);
     if (!stateStore) return baseGateway;
-    return createDefaultAgentGateway({ apiKey: selection.apiKey, providerName: selection.providerName, stateStore });
+    return createDefaultAgentGateway({ apiKey: selection.apiKey, providerName: selection.providerName, stateStore, fetchFn: options.fetchFn });
   }
 
   return createServer(async (req, res) => {
@@ -303,6 +378,12 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
 
       if (req.method === "GET" && url.pathname === "/health") {
         return json(res, 200, { ok: true, mode: "local", profile_id: defaultProfileId });
+      }
+
+      if (req.method === "GET" && url.pathname === "/providers/ollama/status") {
+        const localAuth = auth(req, url);
+        if (!localAuth) return writeUnauthorized(res);
+        return json(res, 200, await inspectOllama(options.fetchFn));
       }
 
       if (req.method === "GET" && url.pathname === "/character") {

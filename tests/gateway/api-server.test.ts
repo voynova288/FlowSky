@@ -41,6 +41,19 @@ async function withServer<T>(fn: (baseUrl: string) => Promise<T>): Promise<T> {
   }
 }
 
+async function withCustomServer<T>(options: Parameters<typeof createApiServer>[0], fn: (baseUrl: string) => Promise<T>): Promise<T> {
+  const server = createApiServer(options);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const baseUrl = `http://127.0.0.1:${address!.port}`;
+  try {
+    return await fn(baseUrl);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+}
+
 async function withStatefulServer<T>(fn: (baseUrl: string, store: SqliteStateStore) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "liukong-stateful-api-"));
   const store = new SqliteStateStore(join(dir, "state.db"));
@@ -114,6 +127,47 @@ test("api server entrypoint runs from relative script path and ignores generic H
     await new Promise((resolve) => child.once("exit", resolve));
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("api ollama status lists local models without provider api key", async () => {
+  const calls: string[] = [];
+  await withCustomServer({
+    gateway: new AgentGateway({ provider: new FakeProvider() }),
+    requireLocalToken: false,
+    fetchFn: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ data: [{ id: "llama3.2" }, { id: "qwen2.5:7b-instruct" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/providers/ollama/status?profile_id=u1`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.running, true);
+    assert.equal(body.configured_model, "qwen2.5:7b-instruct");
+    assert.equal(body.configured_model_available, true);
+    assert.deepEqual(body.models, ["llama3.2", "qwen2.5:7b-instruct"]);
+    assert.equal(calls[0].endsWith("/v1/models"), true);
+  });
+});
+
+test("api ollama status returns local pull guidance when unavailable", async () => {
+  await withCustomServer({
+    gateway: new AgentGateway({ provider: new FakeProvider() }),
+    requireLocalToken: false,
+    fetchFn: async () => { throw new Error("connect ECONNREFUSED 127.0.0.1:11434"); },
+  }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/providers/ollama/status?profile_id=u1`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, false);
+    assert.equal(body.running, false);
+    assert.match(body.pull_command, /^ollama pull /);
+    assert.match(body.install_hint, /ollama serve/);
+  });
 });
 
 test("api stream route emits SSE", async () => {
@@ -418,6 +472,9 @@ test("web UI exposes provider selector and provider-scoped BYOK storage", () => 
   assert.match(rootHtml, /<option value="deepseek">DeepSeek<\/option>/);
   assert.match(rootHtml, /<option value="openai">OpenAI<\/option>/);
   assert.match(rootHtml, /<option value="ollama">Ollama 本地<\/option>/);
+  assert.match(rootHtml, /id="checkOllama"/);
+  assert.match(rootHtml, /\/providers\/ollama\/status/);
+  assert.match(rootHtml, /pull_command/);
   assert.match(rootHtml, /x-liukong-provider/);
   assert.match(rootHtml, /liukong\.deepseek_api_key/);
   assert.match(rootHtml, /liukong\.openai_api_key/);
