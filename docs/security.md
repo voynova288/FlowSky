@@ -32,7 +32,7 @@ The desktop launcher keeps the same localhost model: it starts the local API ser
 ## User data
 
 - Long-term memories are local SQLite rows.
-- Heuristic long-term memory extraction stores concise third-person summaries for durable preferences instead of raw chat sentences when possible.
+- Heuristic long-term memory extraction stores concise third-person summaries for durable preferences instead of raw chat sentences when possible; duplicate entries are skipped and newer durable preferences can replace older matching preference slots.
 - Lightweight emotional state is stored locally as mood/intensity/support-need metadata, not raw emotional diary text.
 - Sensitive memories are stored as pending candidates only and require explicit confirmation.
 - Users can view, delete, export, import/restore, and reset local data.

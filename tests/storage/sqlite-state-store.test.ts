@@ -4,12 +4,21 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { SqliteStateStore, SqliteRequestLogger } from "../../packages/agent-gateway/src/index.ts";
+import { MemoryController, SqliteStateStore, SqliteRequestLogger } from "../../packages/agent-gateway/src/index.ts";
 
 function withTempDb<T>(fn: (dbPath: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "liukong-sqlite-"));
   try {
     return fn(join(dir, "state.db"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function withTempDbAsync<T>(fn: (dbPath: string) => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "liukong-sqlite-"));
+  try {
+    return await fn(join(dir, "state.db"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -58,6 +67,26 @@ test("sqlite settings and memories persist across store instances", () => {
     assert.equal(second.delete("u1", saved.id), true);
     assert.equal(second.retrieve("u1", "短句").length, 0);
     second.close();
+  });
+});
+
+test("sqlite-backed memory controller dedupes and merges local memories", async () => {
+  await withTempDbAsync(async (dbPath) => {
+    const store = new SqliteStateStore(dbPath);
+    const controller = new MemoryController({ store });
+    const settings = {
+      memory_enabled: true,
+      proactive_enabled: false,
+      romance_realism_level: 1,
+      voice_enabled: false,
+      avatar_enabled: false,
+      adult_romance_enabled: true,
+    };
+    await controller.processUserMessage({ userId: "u1", message: "请记住我喜欢长句回复。", sourceMessageId: "m1", settings });
+    await controller.processUserMessage({ userId: "u1", message: "请记住我喜欢短句回复。", sourceMessageId: "m2", settings });
+    assert.equal(store.list("u1").length, 1);
+    assert.equal(store.list("u1")[0].content, "用户喜欢短句回复。");
+    store.close();
   });
 });
 

@@ -10,6 +10,7 @@ export * from "./character/CharacterEngine.ts";
 export * from "./character/LocalCharacterStore.ts";
 export * from "./memory/MemoryController.ts";
 export * from "./memory/MemoryCandidateExtractor.ts";
+export * from "./memory/MemoryDeduper.ts";
 export * from "./memory/MemoryStore.ts";
 export * from "./memory/MemoryWriteGate.ts";
 export * from "./emotion/EmotionTracker.ts";

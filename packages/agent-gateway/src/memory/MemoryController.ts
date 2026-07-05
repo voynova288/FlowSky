@@ -1,4 +1,5 @@
 import { MemoryCandidateExtractor } from "./MemoryCandidateExtractor.ts";
+import { mergeMemoryCandidate } from "./MemoryDeduper.ts";
 import { InMemoryMemoryStore, type MemoryStoreLike } from "./MemoryStore.ts";
 import { MemoryWriteGate } from "./MemoryWriteGate.ts";
 import type { LLMProvider } from "../providers/LLMProvider.ts";
@@ -23,11 +24,24 @@ export class MemoryController {
     if (!params.settings.memory_enabled) return [];
     const extracted = await this.extractor.extract(params.message, params.sourceMessageId);
     const gated = extracted.map((candidate) => this.writeGate.evaluate(candidate));
+    let known = this.store.list(params.userId);
     for (const candidate of gated) {
+      const merge = mergeMemoryCandidate(known, candidate);
+      if (merge.action === "skip") continue;
+      if (merge.action === "update" && this.store.updateMemory) {
+        const updated = this.store.updateMemory(params.userId, merge.target.id, {
+          content: merge.content,
+          memory_type: candidate.memory_type,
+        });
+        if (updated) {
+          known = known.map((memory) => memory.id === updated.id ? updated : memory);
+          continue;
+        }
+      }
       if (candidate.should_store && !candidate.needs_user_confirmation) {
-        this.store.save(params.userId, candidate, true);
+        known.push(this.store.save(params.userId, candidate, true));
       } else if (candidate.needs_user_confirmation) {
-        this.store.save(params.userId, candidate, false);
+        known.push(this.store.save(params.userId, candidate, false));
       }
     }
     return gated;

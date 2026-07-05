@@ -115,7 +115,7 @@ DeepSeek 或 OpenAI API（用户自带 key）
 - Provider：DeepSeek 默认，OpenAI 和本机 Ollama 可选；均走 OpenAI-compatible chat completions、stream、JSON output、tool calls、API key 脱敏
 - AgentGateway：统一 `ChatRequest` / `AgentResponse`、streaming events、request_id、usage/latency/safety 记录
 - PromptAssembler：文件化 system/compliance/output policy、JSON 角色卡、关系状态、用户设置、记忆注入
-- MemoryController：长期记忆抽取会整理为简短第三人称摘要（称呼、喜好、厌恶、陪伴方式、边界偏好），写入 gate、pending/confirm/reject/edit、检索、删除、敏感信息确认逻辑
+- MemoryController：长期记忆抽取会整理为简短第三人称摘要（称呼、喜好、厌恶、陪伴方式、边界偏好），自动跳过重复记忆并按最新称呼/回复风格/同场景陪伴偏好覆盖旧记忆，写入 gate、pending/confirm/reject/edit、检索、删除、敏感信息确认逻辑
 - SQLite 本地持久化：settings、memories、sessions/messages、relationship、emotional_state、tool_calls、local_audit_logs view
 - Local token：默认保护 localhost API
 - 本地角色卡：首次启动复制默认角色卡到 `~/.liukong/characters/`，支持查看、编辑、恢复默认

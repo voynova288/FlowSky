@@ -46,6 +46,40 @@ test("test_extract_support_style_preference", async () => {
   assert.equal(memory.content, "用户在压力大时希望流空先听我说，不要马上给建议。");
 });
 
+test("test_memory_dedupe_skips_exact_duplicate", async () => {
+  const controller = new MemoryController();
+  await controller.processUserMessage({ userId: "u1", message: "请记住我喜欢短句回复。", sourceMessageId: "m1", settings });
+  await controller.processUserMessage({ userId: "u1", message: "请记住我喜欢短句回复。", sourceMessageId: "m2", settings });
+  assert.equal(controller.list("u1").length, 1);
+});
+
+test("test_memory_merge_updates_preferred_name", async () => {
+  const controller = new MemoryController();
+  await controller.processUserMessage({ userId: "u1", message: "以后叫我小鱼。", sourceMessageId: "m1", settings });
+  await controller.processUserMessage({ userId: "u1", message: "以后叫我阿空。", sourceMessageId: "m2", settings });
+  const memories = controller.list("u1");
+  assert.equal(memories.length, 1);
+  assert.equal(memories[0].content, "用户希望被称呼为「阿空」。");
+});
+
+test("test_memory_merge_updates_same_support_context", async () => {
+  const controller = new MemoryController();
+  await controller.processUserMessage({ userId: "u1", message: "我压力大时希望你先听我说，不要马上给建议。", sourceMessageId: "m1", settings });
+  await controller.processUserMessage({ userId: "u1", message: "我压力大时希望你直接给我行动建议。", sourceMessageId: "m2", settings });
+  const memories = controller.list("u1");
+  assert.equal(memories.length, 1);
+  assert.equal(memories[0].content, "用户在压力大时希望流空直接给我行动建议。");
+});
+
+test("test_memory_merge_updates_communication_style", async () => {
+  const controller = new MemoryController();
+  await controller.processUserMessage({ userId: "u1", message: "请记住我喜欢长句回复。", sourceMessageId: "m1", settings });
+  await controller.processUserMessage({ userId: "u1", message: "请记住我喜欢短句回复。", sourceMessageId: "m2", settings });
+  const memories = controller.list("u1");
+  assert.equal(memories.length, 1);
+  assert.equal(memories[0].content, "用户喜欢短句回复。");
+});
+
 test("test_temporary_sensitive_emotion_is_not_memory", async () => {
   const controller = new MemoryController();
   const candidates = await controller.processUserMessage({ userId: "u1", message: "我现在很焦虑。", sourceMessageId: "m1", settings });
