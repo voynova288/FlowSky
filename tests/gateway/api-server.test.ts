@@ -309,6 +309,13 @@ test("api settings and memory routes", async () => {
     assert.equal(body.memories.length, 1);
 
     const id = body.memories[0].id;
+    const editedMemory = await fetch(`${baseUrl}/memories/${id}?profile_id=u1`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "用户喜欢更短的回复。", memory_type: "preference_memory" }),
+    });
+    assert.equal((await editedMemory.json()).memory.content, "用户喜欢更短的回复。");
+
     const badMemory = await fetch(`${baseUrl}/memories/${id}?profile_id=u1`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -396,6 +403,13 @@ test("web UI exposes local data import controls", () => {
   assert.match(rootHtml, /\/local\/import/);
   assert.match(rootHtml, /不会导入 API key 或 local token/);
   assert.match(rootHtml, /角色卡已恢复/);
+});
+
+test("web UI exposes editable memory action", () => {
+  const rootHtml = readFileSync("apps/web/index.html", "utf8");
+  assert.match(rootHtml, /async function editMemory/);
+  assert.match(rootHtml, /编辑这条本地记忆/);
+  assert.match(rootHtml, /method: 'PATCH'/);
 });
 
 test("web UI exposes provider selector and provider-scoped BYOK storage", () => {
