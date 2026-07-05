@@ -10,7 +10,7 @@ import type { LLMCompleteRequest, LLMResponse, LLMStreamChunk, LLMStreamRequest 
 import type { LLMProvider } from "./LLMProvider.ts";
 import { DeepSeekProvider } from "./DeepSeekProvider.ts";
 import { OpenAICompatibleProvider } from "./OpenAICompatibleProvider.ts";
-import { DEEPSEEK_BASE_URL, normalizeProviderName, OPENAI_BASE_URL, type LLMProviderName } from "./model-config.ts";
+import { DEEPSEEK_BASE_URL, normalizeProviderName, OLLAMA_BASE_URL, OPENAI_BASE_URL, type LLMProviderName } from "./model-config.ts";
 
 export interface DefaultAgentGatewayOptions {
   apiKey?: string;
@@ -46,7 +46,7 @@ export function createDefaultAgentGateway(options: DefaultAgentGatewayOptions = 
 
 export function createDefaultProvider(options: DefaultAgentGatewayOptions = {}): LLMProvider {
   const config = resolveProviderConfig(options);
-  if (!config.apiKey) {
+  if (!config.apiKey && config.providerName !== "ollama") {
     if (options.allowMissingApiKey) return new MissingProviderKeyProvider();
     throw new Error("missing_provider_key");
   }
@@ -55,6 +55,15 @@ export function createDefaultProvider(options: DefaultAgentGatewayOptions = {}):
       providerName: "OpenAI",
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
+      fetchFn: options.fetchFn,
+    });
+  }
+  if (config.providerName === "ollama") {
+    return new OpenAICompatibleProvider({
+      providerName: "Ollama",
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      requireApiKey: false,
       fetchFn: options.fetchFn,
     });
   }
@@ -72,6 +81,13 @@ export function resolveProviderConfig(options: DefaultAgentGatewayOptions = {}):
       providerName,
       apiKey: options.apiKey ?? process.env.LIUKONG_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY,
       baseUrl: (options.baseUrl ?? process.env.LIUKONG_OPENAI_BASE_URL ?? process.env.OPENAI_BASE_URL ?? OPENAI_BASE_URL).replace(/\/$/, ""),
+    };
+  }
+  if (providerName === "ollama") {
+    return {
+      providerName,
+      apiKey: options.apiKey ?? process.env.LIUKONG_OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY,
+      baseUrl: (options.baseUrl ?? process.env.LIUKONG_OLLAMA_BASE_URL ?? process.env.OLLAMA_BASE_URL ?? OLLAMA_BASE_URL).replace(/\/$/, ""),
     };
   }
   return {

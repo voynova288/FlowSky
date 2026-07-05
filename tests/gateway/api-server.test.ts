@@ -336,9 +336,11 @@ test("web UI exposes provider selector and provider-scoped BYOK storage", () => 
   assert.match(rootHtml, /id="providerName"/);
   assert.match(rootHtml, /<option value="deepseek">DeepSeek<\/option>/);
   assert.match(rootHtml, /<option value="openai">OpenAI<\/option>/);
+  assert.match(rootHtml, /<option value="ollama">Ollama 本地<\/option>/);
   assert.match(rootHtml, /x-liukong-provider/);
   assert.match(rootHtml, /liukong\.deepseek_api_key/);
   assert.match(rootHtml, /liukong\.openai_api_key/);
+  assert.match(rootHtml, /liukong\.ollama_api_key/);
   assert.match(rootHtml, /sessionStorage\.setItem\(providerApiKeyStorageKey\(\)/);
   assert.equal(rootHtml.includes("localStorage.setItem(providerApiKeyStorageKey()"), false);
 });

@@ -7,6 +7,7 @@ export interface OpenAICompatibleProviderOptions {
   providerName?: string;
   fetchFn?: typeof fetch;
   logger?: Pick<Console, "error" | "warn" | "log">;
+  requireApiKey?: boolean;
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -22,7 +23,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.providerName = options.providerName ?? "openai-compatible";
     this.fetchFn = options.fetchFn ?? fetch;
     this.logger = options.logger;
-    if (!this.apiKey) throw new Error("missing_provider_key");
+    if (!this.apiKey && options.requireApiKey !== false) throw new Error("missing_provider_key");
   }
 
   async complete(request: LLMCompleteRequest): Promise<LLMResponse> {
@@ -98,10 +99,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   private headers(): Record<string, string> {
-    return {
-      "content-type": "application/json",
-      authorization: `Bearer ${this.apiKey}`,
-    };
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    return headers;
   }
 
   private async assertOk(response: Response): Promise<void> {

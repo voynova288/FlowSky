@@ -56,7 +56,7 @@
         <header><h2>本地控制台</h2><div class="meta">不需要账号。API key 只发给本机 localhost 后端，不写入数据库。</div></header>
         <section class="panel">
           <h2>模型密钥</h2>
-          <div class="row"><label>模型 provider</label><select id="providerName"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option></select></div>
+          <div class="row"><label>模型 provider</label><select id="providerName"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="ollama">Ollama 本地</option></select></div>
           <div class="row stack"><label>Provider API key（可选；当前浏览器会话保存，留空则使用后端 .env.local/环境变量）</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
           <div class="row stack"><label>本地 profile</label><input id="profileId" value="default" /></div>
           <button class="secondary" id="saveClient" type="button">保存本地会话设置</button>
@@ -116,8 +116,8 @@
       const providerName = $('#providerName'), apiKey = $('#apiKey'), profileId = $('#profileId'), sessionId = $('#sessionId'), sessionsEl = $('#sessions'), memoryEnabled = $('#memoryEnabled'), romanceLevel = $('#romanceLevel'), avatarEnabled = $('#avatarEnabled'), voiceEnabled = $('#voiceEnabled'), avatarFace = $('#avatarFace'), avatarEmotion = $('#avatarEmotion'), avatarAction = $('#avatarAction'), voiceStatus = $('#voiceStatus'), characterJson = $('#characterJson'), memoriesEl = $('#memories'), importDataFile = $('#importDataFile');
       providerName.value = localStorage.getItem('liukong.provider_name') || 'deepseek';
       apiKey.value = sessionStorage.getItem(providerApiKeyStorageKey()) || '';
-      function selectedProvider() { return providerName.value === 'openai' ? 'openai' : 'deepseek'; }
-      function providerApiKeyStorageKey() { return selectedProvider() === 'openai' ? 'liukong.openai_api_key' : 'liukong.deepseek_api_key'; }
+      function selectedProvider() { return providerName.value === 'openai' ? 'openai' : providerName.value === 'ollama' ? 'ollama' : 'deepseek'; }
+      function providerApiKeyStorageKey() { return selectedProvider() === 'openai' ? 'liukong.openai_api_key' : selectedProvider() === 'ollama' ? 'liukong.ollama_api_key' : 'liukong.deepseek_api_key'; }
       profileId.value = localStorage.getItem('liukong.profile_id') || boot.profileId || 'default';
       sessionId.value = localStorage.getItem('liukong.session_id') || 'local-session';
 

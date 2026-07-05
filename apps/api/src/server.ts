@@ -226,7 +226,9 @@ function providerSelection(req: IncomingMessage): ProviderSelection {
   const headerKey = firstHeader(req.headers["x-liukong-api-key"] ?? req.headers["x-flowsky-api-key"]);
   const envKey = providerName === "openai"
     ? process.env.LIUKONG_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY
-    : process.env.DEEPSEEK_API_KEY;
+    : providerName === "ollama"
+      ? process.env.LIUKONG_OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY
+      : process.env.DEEPSEEK_API_KEY;
   return { providerName, apiKey: (headerKey || envKey || "").trim() };
 }
 
@@ -236,6 +238,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function providerRequiresApiKey(providerName: LLMProviderName): boolean {
+  return providerName !== "ollama";
 }
 
 function statusForError(code: string): number {
@@ -364,7 +370,7 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         const localAuth = auth(req, url, body);
         if (!localAuth) return writeUnauthorized(res);
         const selection = providerSelection(req);
-        if (!selection.apiKey && !options.gateway) throw new Error("missing_provider_key");
+        if (providerRequiresApiKey(selection.providerName) && !selection.apiKey && !options.gateway) throw new Error("missing_provider_key");
         const response = await gatewayForChat(selection).chat({ ...body, user_id: localAuth.profileId, profile_id: localAuth.profileId });
         return json(res, 200, response);
       }
@@ -374,7 +380,7 @@ export function createApiServer(input: AgentGateway | CreateApiServerOptions = {
         const localAuth = auth(req, url, body);
         if (!localAuth) return writeUnauthorized(res);
         const selection = providerSelection(req);
-        if (!selection.apiKey && !options.gateway) throw new Error("missing_provider_key");
+        if (providerRequiresApiKey(selection.providerName) && !selection.apiKey && !options.gateway) throw new Error("missing_provider_key");
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache, no-transform",

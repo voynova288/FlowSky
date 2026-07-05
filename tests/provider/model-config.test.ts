@@ -17,8 +17,18 @@ test("openai model config omits deepseek-only thinking fields", () => {
   assert.deepEqual(memory.response_format, { type: "json_object" });
 });
 
+test("ollama model config uses local defaults without deepseek-only fields", () => {
+  const chat = modelConfigForMode("girlfriend_chat", "ollama");
+  assert.equal(chat.model, "qwen2.5:7b-instruct");
+  assert.equal(chat.thinking, undefined);
+  assert.equal(chat.reasoning_effort, undefined);
+  const memory = modelConfigForMode("memory_extraction", "ollama");
+  assert.deepEqual(memory.response_format, { type: "json_object" });
+});
+
 test("provider names are validated", () => {
   assert.equal(normalizeProviderName("DeepSeek"), "deepseek");
   assert.equal(normalizeProviderName("openai"), "openai");
+  assert.equal(normalizeProviderName("OLLAMA"), "ollama");
   assert.throws(() => normalizeProviderName("anthropic"), /bad_provider/);
 });

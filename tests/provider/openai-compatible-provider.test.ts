@@ -76,6 +76,23 @@ test("openai-compatible provider redacts keys in errors", async () => {
   assert.equal(redacted.includes("liveSecretToken"), false);
 });
 
+test("openai-compatible provider can omit authorization for local providers", async () => {
+  const calls: any[] = [];
+  const provider = new OpenAICompatibleProvider({
+    providerName: "Ollama",
+    requireApiKey: false,
+    baseUrl: "http://127.0.0.1:11434/v1",
+    fetchFn: async (url, init) => {
+      calls.push({ url, headers: init?.headers, body: JSON.parse(String(init?.body)) });
+      return jsonResponse({ choices: [{ message: { content: "local ok" } }], usage: {} });
+    },
+  });
+  const result = await provider.complete({ model: "qwen2.5:7b-instruct", messages: [{ role: "user", content: "hi" }] });
+  assert.equal(result.text, "local ok");
+  assert.equal(calls[0].url, "http://127.0.0.1:11434/v1/chat/completions");
+  assert.equal(calls[0].headers.authorization, undefined);
+});
+
 import { createDefaultProvider, resolveProviderConfig } from "../../packages/agent-gateway/src/index.ts";
 
 test("default provider factory selects openai with mocked fetch", async () => {
@@ -94,10 +111,30 @@ test("default provider factory selects openai with mocked fetch", async () => {
   assert.equal(calls[0].url, "https://openai.example/v1/chat/completions");
 });
 
-test("provider config resolves deepseek default and openai override", () => {
+test("default provider factory selects local ollama without api key", async () => {
+  const calls: any[] = [];
+  const provider = createDefaultProvider({
+    providerName: "ollama",
+    baseUrl: "http://127.0.0.1:11434/v1/",
+    fetchFn: async (url, init) => {
+      calls.push({ url, headers: init?.headers, body: JSON.parse(String(init?.body)) });
+      return jsonResponse({ choices: [{ message: { content: "ollama ok" } }], usage: {} });
+    },
+  });
+  const result = await provider.complete({ model: "qwen2.5:7b-instruct", messages: [{ role: "user", content: "hi" }] });
+  assert.equal(result.text, "ollama ok");
+  assert.equal(calls[0].url, "http://127.0.0.1:11434/v1/chat/completions");
+  assert.equal(calls[0].headers.authorization, undefined);
+});
+
+test("provider config resolves deepseek default, openai override, and local ollama", () => {
   assert.equal(resolveProviderConfig({ apiKey: "deepseek-key" }).providerName, "deepseek");
   const openai = resolveProviderConfig({ providerName: "openai", apiKey: "openai-key", baseUrl: "https://openai.example/v1/" });
   assert.equal(openai.providerName, "openai");
   assert.equal(openai.apiKey, "openai-key");
   assert.equal(openai.baseUrl, "https://openai.example/v1");
+  const ollama = resolveProviderConfig({ providerName: "ollama" });
+  assert.equal(ollama.providerName, "ollama");
+  assert.equal(ollama.apiKey, undefined);
+  assert.equal(ollama.baseUrl, "http://127.0.0.1:11434/v1");
 });
